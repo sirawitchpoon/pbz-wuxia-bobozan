@@ -1,11 +1,22 @@
-# Wuxia BoboZan
-
-> **Turn-based 1v1 duel Discord bot for the Phantom Blade Zero community.**  
-> Button-based challenges, temporary duel channels, Honor Points integration.
+<p align="center">
+  <strong>Wuxia BoboZan</strong>
+</p>
+<p align="center">
+  <em>Turn-based 1v1 duel Discord bot for the Phantom Blade Zero community.</em>
+</p>
+<p align="center">
+  <a href="https://nodejs.org"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen?logo=node.js" alt="Node" /></a>
+  <a href="https://discord.js.org"><img src="https://img.shields.io/badge/Discord.js-v14-5865F2?logo=discord" alt="Discord.js" /></a>
+  <a href="https://www.typescriptlang.org"><img src="https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript" alt="TypeScript" /></a>
+  <img src="https://img.shields.io/badge/license-ISC-green" alt="License" />
+  <img src="https://img.shields.io/badge/Phantom%20Blade%20Zero-PBZ%20Ecosystem-8b0000" alt="PBZ" />
+</p>
 
 ---
 
-## Overview
+Button-based challenges, temporary duel channels, Honor Points integration. Inspired by Chinese martial arts — 5 classes, Elo-style ladder.
+
+## 📋 Overview
 
 | | |
 |---|---|
@@ -13,11 +24,9 @@
 | **Role** | In-server mini-game: challenge, class selection, battle, ladder |
 | **Stack** | TypeScript, Discord.js v14, MongoDB |
 
-Inspired by Chinese martial arts. **Open Challenge** or **Target Challenge** from Hub; challenge cards in a dedicated channel; on accept, a **private temporary channel** is created for the two players. Class selection and battle run there; channel is deleted after the match. Elo-style ladder and optional sync to central Honor Points API.
-
 ---
 
-## Features
+## ✨ Features
 
 - **8 fixed channels** — Hub, Challenge cards, Match history, Leaderboard, Ranks, Rules, Honor, My Stats.
 - **Temp duel channels** — Visible only to the two players (and optional admin role); auto-deleted after match.
@@ -26,7 +35,7 @@ Inspired by Chinese martial arts. **Open Challenge** or **Target Challenge** fro
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
 ```bash
 cp .env.example .env   # DISCORD_*, all BOBOZAN_*_CHANNEL_ID, MONGO_URI
@@ -39,10 +48,10 @@ npm start
 
 ---
 
-## Environment (main)
+## ⚙️ Environment
 
 | Variable | Required | Description |
-|----------|----------|--------------|
+|----------|----------|-------------|
 | `DISCORD_TOKEN`, `CLIENT_ID`, `GUILD_ID` | Yes | Discord app |
 | `BOBOZAN_HUB_CHANNEL_ID` … `BOBOZAN_STATS_CHANNEL_ID` | Yes | All 8 channel IDs |
 | `MONGO_URI` | Yes | Same DB as other PBZ bots in production |
@@ -51,7 +60,7 @@ npm start
 
 ---
 
-## Scripts
+## 📜 Scripts
 
 | Command | Description |
 |---------|-------------|
@@ -63,6 +72,6 @@ npm start
 
 ---
 
-## License
+## 📄 License
 
-ISC
+ISC · Part of the **Phantom Blade Zero** community ecosystem.
