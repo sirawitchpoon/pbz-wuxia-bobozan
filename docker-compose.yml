@@ -1,0 +1,18 @@
+# ใช้ MongoDB ของ honor-points-service — รัน honor-points-service ก่อน แล้วรัน compose นี้
+services:
+  wuxia-bobozan:
+    build: .
+    image: wuxia-bobozan:latest
+    container_name: wuxia-bobozan
+    env_file: .env
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/honorbot
+      - HONOR_POINTS_API_URL=http://honor-points-api:3001
+    restart: unless-stopped
+    networks:
+      - honor-points-network
+
+networks:
+  honor-points-network:
+    external: true
+    name: honor-points-service_honor-points-network
