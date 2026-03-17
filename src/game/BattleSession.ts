@@ -32,6 +32,12 @@ export class BattleSession {
   private playerB: Player | null = null;
 
   private round: number = 0;
+  // Layout in temp duel channel:
+  // - timerMessage: top embed (phase + time info)
+  // - logMessage: middle embed (round log)
+  // - battleMessage: bottom embed (HP bars + action buttons)
+  private timerMessage: Message | null = null;
+  private logMessage: Message | null = null;
   private battleMessage: Message | null = null;
   private channel: TextChannel | null = null;
   private roundTimer: NodeJS.Timeout | null = null;
@@ -80,14 +86,14 @@ export class BattleSession {
 
     this.channel = channel;
     this.round = 1;
-
-    const embed = this.buildBattleEmbed();
-
-    this.battleMessage = await channel.send({
-      embeds: [embed],
-      components: [this.buildActionButtons(), this.buildSecondaryButtons()],
-    });
     this.roundIdleExtended = false;
+
+    // Ensure the 3-message layout (timer, log, battle) exists.
+    await this.ensureLayoutMessages(channel);
+
+    await this.updateTimerEmbed(false, false).catch(() => {});
+    await this.updateLogEmbed().catch(() => {});
+    await this.updateBattleEmbed();
     this.startRoundTimer();
   }
 
@@ -175,12 +181,8 @@ export class BattleSession {
 
     this.round++;
     this.roundIdleExtended = false;
-    // Visible message that round changed (not just embed edit)
-    if (this.channel) {
-      await this.channel
-        .send({ content: `⚔️ **Round ${this.round}** — Choose your action!` })
-        .catch(() => {});
-    }
+    await this.updateLogEmbed().catch(() => {});
+    await this.updateTimerEmbed(false, false).catch(() => {});
     await this.updateBattleEmbed();
     this.startRoundTimer();
   }
@@ -310,6 +312,8 @@ export class BattleSession {
     } finally {
       SessionManager.removeSession(this);
       this.scheduleTempChannelDeletion();
+      // Mark phase as finished (best-effort).
+      await this.updateTimerEmbed(false, true).catch(() => {});
     }
   }
 
@@ -324,14 +328,7 @@ export class BattleSession {
       if (bothIdle && !this.roundIdleExtended) {
         // Give both players extra time before declaring draw
         this.roundIdleExtended = true;
-        if (this.channel) {
-          const extraSec = Math.round(ROUND_TIMEOUT_BOTH_IDLE_MS / 1000);
-          await this.channel
-            .send({
-              content: `⏰ No one chose in time. You have **${extraSec}** more seconds for this round.`,
-            })
-            .catch(() => {});
-        }
+        await this.updateTimerEmbed(true, false).catch(() => {});
         this.roundTimer = setTimeout(async () => {
           if (this.settled || !this.playerA || !this.playerB) return;
           if (!this.playerA.actionLocked && !this.playerB.actionLocked) {
@@ -345,16 +342,24 @@ export class BattleSession {
         return;
       }
 
-      // Whoever hasn't locked in loses (or draw if both idle after extension)
-      if (bothIdle) {
-        this.playerA.hp = 0;
-        this.playerB.hp = 0;
-      } else if (!this.playerA.actionLocked) {
-        this.playerA.hp = 0;
-      } else {
-        this.playerB.hp = 0;
+      // Only one player idle: treat idle player as "no action" and resolve the round normally
+      if (!bothIdle) {
+        if (!this.playerA.actionLocked) {
+          this.playerA.actionLocked = true;
+          this.playerA.action = null;
+        }
+        if (!this.playerB.actionLocked) {
+          this.playerB.actionLocked = true;
+          this.playerB.action = null;
+        }
+        this.clearRoundTimer();
+        await this.resolveCurrentRound();
+        return;
       }
 
+      // Both idle after extension: draw
+      this.playerA.hp = 0;
+      this.playerB.hp = 0;
       this.settled = true;
       const result = this.buildBattleResult(true, false);
       await this.settleMatch(result);
@@ -405,6 +410,48 @@ export class BattleSession {
   }
 
   // ── Embed Rendering ─────────────────────────────────────────────────
+
+  private buildTimerEmbed(extraTime: boolean, finished: boolean): EmbedBuilder {
+    const roundSec = parseInt(process.env.ROUND_TIMEOUT_SECONDS ?? '30', 10);
+    const extraSec = Math.round(ROUND_TIMEOUT_BOTH_IDLE_MS / 1000);
+
+    if (finished) {
+      return new EmbedBuilder()
+        .setTitle('⏱️ Phase: Finished')
+        .setDescription('The duel has ended. This channel will be removed shortly.')
+        .setColor(0x95a5a6);
+    }
+
+    const title = this.round > 0 ? `⏱️ Phase: Round ${this.round}` : '⏱️ Phase: Duel';
+
+    const lines: string[] = [];
+    lines.push(`• Time limit: **${roundSec}s** per round.`);
+    if (extraTime) {
+      lines.push(`• Extra window: **${extraSec}s** (both players were idle).`);
+    } else {
+      lines.push('• If both players idle, an extra window is granted before draw.');
+    }
+
+    return new EmbedBuilder().setTitle(title).setDescription(lines.join('\n')).setColor(0x3498db);
+  }
+
+  private buildLogEmbed(): EmbedBuilder {
+    if (!this.lastRoundLog || this.lastRoundLog.round <= 0) {
+      return new EmbedBuilder()
+        .setTitle('📜 Battle log')
+        .setDescription('No combat events yet. Actions will appear here each round.')
+        .setColor(0x2c3e50);
+    }
+
+    const logText = this.lastRoundLog.entries.length > 0
+      ? this.lastRoundLog.entries.join('\n')
+      : '*(no events)*';
+
+    return new EmbedBuilder()
+      .setTitle(`📜 Round ${this.lastRoundLog.round} — Combat log`)
+      .setDescription(logText.substring(0, 4096))
+      .setColor(0x2c3e50);
+  }
 
   private buildBattleEmbed(): EmbedBuilder {
     const pA = this.playerA;
@@ -458,17 +505,6 @@ export class BattleSession {
           inline: true,
         },
       );
-
-      if (this.lastRoundLog) {
-        const logText = this.lastRoundLog.entries.length > 0
-          ? this.lastRoundLog.entries.join('\n')
-          : '*(no events)*';
-        embed.addFields({
-          name: `📜 Round ${this.lastRoundLog.round} — Combat Log`,
-          value: logText.substring(0, 1024),
-          inline: false,
-        });
-      }
 
       if (!this.settled) {
         const timeoutSec = parseInt(process.env.ROUND_TIMEOUT_SECONDS ?? '30', 10);
@@ -562,6 +598,28 @@ export class BattleSession {
     await this.battleMessage.edit({ embeds: [embed], components }).catch(() => {});
   }
 
+  private async updateTimerEmbed(extraTime: boolean, finished: boolean): Promise<void> {
+    if (!this.channel) return;
+    const embed = this.buildTimerEmbed(extraTime, finished);
+
+    if (!this.timerMessage) {
+      this.timerMessage = await this.channel.send({ embeds: [embed] });
+      return;
+    }
+    await this.timerMessage.edit({ embeds: [embed] }).catch(() => {});
+  }
+
+  private async updateLogEmbed(): Promise<void> {
+    if (!this.channel) return;
+    const embed = this.buildLogEmbed();
+
+    if (!this.logMessage) {
+      this.logMessage = await this.channel.send({ embeds: [embed] });
+      return;
+    }
+    await this.logMessage.edit({ embeds: [embed] }).catch(() => {});
+  }
+
   // ── Battle Result Builder ───────────────────────────────────────────
 
   private buildBattleResult(timeout: boolean, forfeit: boolean): BattleResult {
@@ -619,5 +677,28 @@ export class BattleSession {
 
   isParticipant(userId: string): boolean {
     return userId === this.playerAId || userId === this.playerBId;
+  }
+
+  /** Ensure the 3-layout messages exist in the temp duel channel. */
+  private async ensureLayoutMessages(channel: TextChannel): Promise<void> {
+    if (!this.timerMessage) {
+      this.timerMessage = await channel.send({
+        embeds: [this.buildTimerEmbed(false, false)],
+      });
+    }
+
+    if (!this.logMessage) {
+      this.logMessage = await channel.send({
+        embeds: [this.buildLogEmbed()],
+      });
+    }
+
+    if (!this.battleMessage) {
+      const embed = this.buildBattleEmbed();
+      this.battleMessage = await channel.send({
+        embeds: [embed],
+        components: [this.buildActionButtons(), this.buildSecondaryButtons()],
+      });
+    }
   }
 }

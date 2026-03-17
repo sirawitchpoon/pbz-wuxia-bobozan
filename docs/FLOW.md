@@ -60,8 +60,7 @@ sequenceDiagram
     B->>O: รอเลือกอาชีพ (ephemeral)
 
     Note over U,O: ทั้งคู่เลือกแล้ว
-    B->>Temp: เริ่ม Battle Embed + ปุ่มท่า
-    B->>Temp: ส่งข้อความ "Round N — Choose your action!" ทุกรอบ
+    B->>Temp: สร้าง 3 Embed (Timer / Log / Status+ปุ่ม)
     B->>B: เริ่มรอบที่ 1 + ตั้งเวลา ROUND_TIMEOUT_SECONDS
 ```
 
@@ -94,17 +93,27 @@ sequenceDiagram
 
 ---
 
-## 4. รอบดวล (Battle Round)
+## 4. รอบดวล (Battle Round) — ช่องชั่วคราว 3 กล่อง
+
+ในช่องดวลชั่วคราวมี **3 Embed** (แก้ไขแบบ edit ไม่ส่งข้อความใหม่):
+
+| ลำดับ | กล่อง | เนื้อหา |
+|------|--------|--------|
+| บน | **Timer / Phase** | ระยะเวลารอบ (เช่น 30s), กรณีทั้งคู่ไม่กด → ระยะเวลาเพิ่ม (60s) ก่อน draw |
+| กลาง | **Battle log** | สิ่งที่เกิดขึ้นในรอบ (ใคร Charge / โจมตี / บล็อก ฯลฯ) |
+| ล่าง | **Status + ปุ่ม** | HP/Energy ทั้งสองฝ่าย, สถานะเทิร์น, ปุ่ม Action (Charge / Attack / Defend / Ultimate / Set Trap / Forfeit) |
+
+**Timeout:** ถ้า **ฝ่ายเดียว** ไม่กดในเวลา → ถือว่าฝ่ายนั้น **ไม่มี action** ในรอบนั้น แล้ว resolve รอบตามปกติ (อีกฝ่ายโจมตีได้). ไม่ได้นับแพ้ทันที. ถ้า **ทั้งคู่** ไม่กด → ให้เวลาเพิ่มแล้วถ้ายังไม่กดถึงนับ Draw.
 
 ```mermaid
 flowchart LR
     subgraph round [หนึ่งรอบ]
-        A[แสดง Battle Embed\n+ ปุ่มท่า] --> B[ผู้เล่น A กดท่า\nephemeral]
-        B --> C[ผู้เล่น B กดท่า\nephemeral]
-        C --> D[ทั้งคู่ล็อกแล้ว]
+        A[แก้ 3 Embed\n+ ปุ่มท่า] --> B[ผู้เล่น A กดท่า\nephemeral]
+        B --> C[ผู้เล่น B กดท่า\nหรือ timeout = no action]
+        C --> D[ทั้งคู่มีสถานะแล้ว]
         D --> E[resolveRound\n4-level pipeline]
         E --> F{มีคนตาย?}
-        F -->|ไม่| G[Tick effects\nอัปเดต Embed\nเริ่มรอบถัดไป]
+        F -->|ไม่| G[Tick effects\nแก้ Embed\nเริ่มรอบถัดไป]
         G --> A
         F -->|ใช่| H[Settlement]
     end

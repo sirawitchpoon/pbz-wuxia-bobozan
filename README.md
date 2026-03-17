@@ -60,6 +60,16 @@ npm start
 
 ---
 
+## 📚 Documentation
+
+| Location | Description |
+|----------|-------------|
+| **docs/FLOW.md** | Flow diagrams (8 channels, temp duel, 3-embed battle UI, timeout rules) |
+| **docs/DASHBOARD.md** | Data sources for dashboard (MongoDB collections, schema) |
+| **reports/CHANGELOG.md** | Changelog and recent changes |
+
+---
+
 ## 📜 Scripts
 
 | Command | Description |

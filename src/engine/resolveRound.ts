@@ -16,6 +16,14 @@ export interface RoundLog {
 export function resolveRound(p1: Player, p2: Player, roundNumber: number): RoundLog {
   const log: string[] = [];
 
+  // No action (e.g. timeout): treat as did nothing this round
+  if (p1.action === null) {
+    log.push(`⏰ ${p1.displayName} did not choose in time — no action this round.`);
+  }
+  if (p2.action === null) {
+    log.push(`⏰ ${p2.displayName} did not choose in time — no action this round.`);
+  }
+
   // ── Level 1: Pre-Check ──────────────────────────────────────────────
   preCheck(p1, p2, log);
   preCheck(p2, p1, log);
