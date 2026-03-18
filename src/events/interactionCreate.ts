@@ -16,6 +16,7 @@ import { Action, Job } from '../models/enums';
 import * as SessionManager from '../game/SessionManager';
 import { BattleSession } from '../game/BattleSession';
 import { buildJobSelectEmbed, buildJobSelectMenu } from '../game/JobSelectView';
+import { buildGuidebookEmbed, buildGuidebookNavComponents, GUIDEBOOK_JOB_ORDER } from '../game/GuidebookView';
 import { LadderProfile, getRankForRating, RANK_TIERS } from '../models/LadderProfile';
 import { MatchHistory } from '../models/MatchHistory';
 import * as LadderService from '../services/LadderService';
@@ -70,6 +71,9 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
   if (id === 'bobozan_rank_tiers') return handleRanksButton(interaction);
   if (id === 'bobozan_rules') return handleRulesButton(interaction);
 
+  // Guidebook (class details) navigation (single persistent embed message)
+  if (id.startsWith('bobozan_guidebook_show:')) return handleGuidebookShow(interaction);
+
   // Challenge accept/decline
   if (id.startsWith('bobozan_accept_')) return handleAcceptChallenge(interaction);
   if (id.startsWith('bobozan_decline_')) return handleDeclineChallenge(interaction);
@@ -83,6 +87,9 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
 
   // Forfeit
   if (id === 'bobozan_forfeit') return handleForfeitButton(interaction);
+
+  // Admin cleanup: delete temp duel channel
+  if (id.startsWith('bobozan_delete_channel:')) return handleDeleteTempChannel(interaction);
 }
 
 // ── Open Challenge ────────────────────────────────────────────────────
@@ -317,7 +324,7 @@ async function handleAcceptChallenge(interaction: ButtonInteraction): Promise<vo
           `> The duel has begun in ${tempChannel}`,
         )
         .setColor(0x2ecc71)
-        .setFooter({ text: 'Wuxia BoboZan · May the best warrior win' }),
+        .setFooter({ text: 'Shadow Duel · May the best warrior win' }),
     ],
     components: [],
   });
@@ -398,10 +405,48 @@ async function handleForfeitButton(interaction: ButtonInteraction): Promise<void
 
   const success = await session.forfeit(interaction.user.id);
   if (success) {
-    await interaction.reply({ content: '🏳️ You forfeited.', ephemeral: true });
+    await interaction.deferUpdate().catch(async () => {
+      await interaction.reply({ content: '🏳️ You forfeited.', ephemeral: true }).catch(() => {});
+    });
   } else {
     await interaction.reply({ content: '❌ Cannot forfeit (match may have ended).', ephemeral: true });
   }
+}
+
+async function handleDeleteTempChannel(interaction: ButtonInteraction): Promise<void> {
+  const parts = interaction.customId.split(':');
+  const channelId = parts[1];
+  const ch = interaction.channel;
+
+  if (!channelId || !ch || ch.id !== channelId) {
+    await interaction.reply({ content: '❌ Invalid channel target.', ephemeral: true });
+    return;
+  }
+
+  // Admin check: either has configured admin role, or has Manage Channels permission.
+  const adminRoleId = process.env.BOBOZAN_ADMIN_ROLE_ID;
+  const member = interaction.member as any;
+  const hasRole = Boolean(
+    adminRoleId &&
+      member &&
+      member.roles?.cache &&
+      typeof member.roles.cache.has === 'function' &&
+      member.roles.cache.has(adminRoleId),
+  );
+  const hasManageChannels = interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels) ?? false;
+
+  if (!hasRole && !hasManageChannels) {
+    await interaction.reply({ content: '❌ Admins only.', ephemeral: true });
+    return;
+  }
+
+  await interaction.reply({ content: '🗑️ Deleting channel...', ephemeral: true }).catch(() => {});
+  await (ch as any).delete().catch(async () => {
+    await interaction.followUp({
+      content: '❌ Failed to delete channel. Check bot permissions (Manage Channels).',
+      ephemeral: true,
+    }).catch(() => {});
+  });
 }
 
 // ── Info Buttons (Ephemeral) ──────────────────────────────────────────
@@ -442,7 +487,7 @@ async function handleProfileButton(interaction: ButtonInteraction): Promise<void
   });
 
   const embed = new EmbedBuilder()
-    .setTitle(`${rank.icon} ${target.displayName} — Wuxia BoboZan`)
+    .setTitle(`${rank.icon} ${target.displayName} — Shadow Duel`)
     .setColor(0xd4a574)
     .addFields(
       { name: 'Rank', value: `${rank.icon} ${rank.titleEn}`, inline: true },
@@ -478,7 +523,7 @@ async function handleLeaderboardButton(interaction: ButtonInteraction): Promise<
   });
 
   const embed = new EmbedBuilder()
-    .setTitle('⚔️ Wuxia BoboZan — Leaderboard')
+    .setTitle('⚔️ Shadow Duel — Leaderboard')
     .setDescription(lines.join('\n'))
     .setColor(0xd4a574)
     .setFooter({ text: `${top.length} players` });
@@ -491,7 +536,7 @@ async function handleHonorButton(interaction: ButtonInteraction): Promise<void> 
   const total = profile?.honorTotal ?? 0;
 
   const embed = new EmbedBuilder()
-    .setTitle('🏅 Wuxia BoboZan — Honor Points')
+    .setTitle('🏅 Shadow Duel — Honor Points')
     .setColor(0xd4a574)
     .setDescription(`**Your total Honor: ${total}**\n\nHonor is added to the central Honor Points system after each match.`)
     .addFields({
@@ -518,7 +563,7 @@ async function handleRanksButton(interaction: ButtonInteraction): Promise<void> 
   const lines = RANK_TIERS.map(t => `${t.icon} **${t.titleEn}** — ${t.minRating}+ rating`);
 
   const embed = new EmbedBuilder()
-    .setTitle('⚔️ Wuxia BoboZan — Rank Tiers')
+    .setTitle('⚔️ Shadow Duel — Rank Tiers')
     .setDescription(lines.join('\n'))
     .setColor(0xd4a574)
     .setFooter({ text: 'Default starting rating: 1200 (Martial Artist)' });
@@ -527,11 +572,11 @@ async function handleRanksButton(interaction: ButtonInteraction): Promise<void> 
 }
 
 async function handleRulesButton(interaction: ButtonInteraction): Promise<void> {
-  const roundSec = process.env.ROUND_TIMEOUT_SECONDS || '30';
+  const roundSec = process.env.ROUND_TIMEOUT_SECONDS || '20';
   const bothIdleSec = process.env.ROUND_TIMEOUT_BOTH_IDLE_SECONDS || '60';
 
   const embed = new EmbedBuilder()
-    .setTitle('⚔️ Wuxia BoboZan — Rules')
+    .setTitle('⚔️ Shadow Duel — Rules')
     .setColor(0xd4a574)
     .setDescription('1v1 turn-based duel inspired by Chinese martial arts.')
     .addFields(
@@ -566,6 +611,28 @@ async function handleRulesButton(interaction: ButtonInteraction): Promise<void> 
     );
 
   await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+async function handleGuidebookShow(interaction: ButtonInteraction): Promise<void> {
+  const id = interaction.customId;
+  const jobKey = id.split(':')[1] as keyof typeof Job | undefined;
+  if (!jobKey) {
+    await interaction.reply({ content: '❌ Invalid guidebook button.', ephemeral: true });
+    return;
+  }
+
+  const job = (Job as any)[jobKey] as Job | undefined;
+  if (!job || !GUIDEBOOK_JOB_ORDER.includes(job)) {
+    await interaction.reply({ content: '❌ Invalid class.', ephemeral: true });
+    return;
+  }
+
+  const embed = buildGuidebookEmbed(job);
+  const components = buildGuidebookNavComponents(job);
+
+  // Edit the same persistent embed message. Defer first to avoid interaction timeout.
+  await interaction.deferUpdate().catch(() => {});
+  await interaction.message.edit({ embeds: [embed], components }).catch(() => {});
 }
 
 // ── Job Selection (Select Menu) ───────────────────────────────────────

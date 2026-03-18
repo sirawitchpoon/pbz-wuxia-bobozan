@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>Wuxia BoboZan</strong>
+  <strong>Shadow Duel</strong>
 </p>
 <p align="center">
   <em>Turn-based 1v1 duel Discord bot for the Phantom Blade Zero community.</em>
@@ -28,7 +28,7 @@ Button-based challenges, temporary duel channels, Honor Points integration. Insp
 
 ## ✨ Features
 
-- **8 fixed channels** — Hub, Challenge cards, Match history, Leaderboard, Ranks, Rules, Honor, My Stats.
+- **9 fixed channels** — Hub, Challenge cards, Match history, Leaderboard, Ranks, Rules, Honor, My Stats, Guidebook.
 - **Temp duel channels** — Visible only to the two players (and optional admin role); auto-deleted after match.
 - **5 classes** — Swordsman, Bladesman, Assassin, Iron Monk, Engineer (passive + ultimate).
 - **Ladder** — Stored in MongoDB; optional `HONOR_POINTS_API_*` for central economy.
@@ -53,7 +53,7 @@ npm start
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DISCORD_TOKEN`, `CLIENT_ID`, `GUILD_ID` | Yes | Discord app |
-| `BOBOZAN_HUB_CHANNEL_ID` … `BOBOZAN_STATS_CHANNEL_ID` | Yes | All 8 channel IDs |
+| `BOBOZAN_HUB_CHANNEL_ID` … `BOBOZAN_GUIDEBOOK_CHANNEL_ID` | Yes | All fixed channel IDs |
 | `MONGO_URI` | Yes | Same DB as other PBZ bots in production |
 | `HONOR_POINTS_API_URL`, `HONOR_POINTS_API_KEY` | No | Central Honor API |
 | `BOBOZAN_ADMIN_ROLE_ID` | No | Role that can view temp duel channels |

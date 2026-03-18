@@ -1,4 +1,4 @@
-# Wuxia BoboZan — Changelog
+# Shadow Duel — Changelog
 
 Summary of notable changes. All dates approximate.
 
@@ -33,7 +33,7 @@ Summary of notable changes. All dates approximate.
 
 ### Configuration (env)
 
-- `ROUND_TIMEOUT_SECONDS` — Seconds per round to choose an action (default 30).
+- `ROUND_TIMEOUT_SECONDS` — Seconds per round to choose an action (default 20).
 - `ROUND_TIMEOUT_BOTH_IDLE_SECONDS` — Extra seconds when both players idle before declaring draw (default 60).
 - `BOBOZAN_CHALLENGE_EXPIRE_SECONDS` — Challenge card expiry (default 180).
 - `BOBOZAN_TEMP_CHANNEL_DELETE_DELAY_MS` — Delay before deleting temp channel after match end (default 5000).

@@ -1,6 +1,6 @@
-# Wuxia BoboZan — Dashboard & data sources
+# Shadow Duel — Dashboard & data sources
 
-This document describes the data produced by Wuxia BoboZan so that a dashboard (e.g. PBZ Analytics) can display ladder, match history, or links to the bot.
+This document describes the data produced by Shadow Duel so that a dashboard (e.g. PBZ Analytics) can display ladder, match history, or links to the bot.
 
 ---
 
@@ -73,4 +73,4 @@ Honor earned in BoboZan is sent to the **Honor Points API** (`HONOR_POINTS_API_*
 
 1. **Leaderboard:** Query `bobozan_ladder_profiles`, sort by `rating` desc, show top 10–20 with name, rating, W/L/D, win rate.
 2. **Recent matches:** Query `bobozan_match_history` by `createdAt` desc, show last N with player names, winner/draw, rounds, date.
-3. **Link:** Add a nav item “Wuxia BoboZan” that links to this data or to the bot’s invite/support server.
+3. **Link:** Add a nav item “Shadow Duel” that links to this data or to the bot’s invite/support server.

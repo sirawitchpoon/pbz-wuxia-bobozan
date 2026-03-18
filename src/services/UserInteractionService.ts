@@ -11,6 +11,7 @@ import * as LadderService from './LadderService';
 import { getRankForRating } from '../models/LadderProfile';
 import { RANK_TIERS } from '../models/LadderProfile';
 import { setLeaderboardMessageId } from './ChannelMessageStore';
+import { buildGuidebookEmbed, buildGuidebookNavComponents, GUIDEBOOK_JOB_ORDER } from '../game/GuidebookView';
 
 /**
  * Manages persistent messages:
@@ -20,6 +21,7 @@ import { setLeaderboardMessageId } from './ChannelMessageStore';
  * - Channel 6: Rules (static)
  * - Channel 7: Honor (static)
  * - Channel 8: My Stats button
+ * - Channel 9: Guidebook (class details) with Prev/Next buttons
  */
 export class UserInteractionService {
   private client: Client | null = null;
@@ -48,6 +50,7 @@ export class UserInteractionService {
     await this.setupRulesChannel();
     await this.setupHonorChannel();
     await this.setupStatsChannel();
+    await this.setupGuidebookChannel();
   }
 
   private async setupHub(): Promise<void> {
@@ -59,7 +62,7 @@ export class UserInteractionService {
 
     const messages = await channel.messages.fetch({ limit: 10 });
     const existing = messages.find(
-      m => m.author.id === this.client!.user?.id && m.embeds.length > 0 && m.embeds[0].title?.includes('Wuxia BoboZan'),
+      m => m.author.id === this.client!.user?.id && m.embeds.length > 0 && m.embeds[0].title?.includes('Arena'),
     );
 
     const embed = this.buildHubEmbed();
@@ -74,7 +77,7 @@ export class UserInteractionService {
 
   private buildHubEmbed(): EmbedBuilder {
     return new EmbedBuilder()
-      .setTitle('⚔️ Wuxia BoboZan — Arena')
+      .setTitle('⚔️ Shadow Duel — Arena')
       .setDescription(
         'Turn-based psychological duel game.\nInspired by Chinese martial arts — real-time 1v1.\n\n' +
         '**How to start a duel:**\n' +
@@ -84,7 +87,7 @@ export class UserInteractionService {
         '📊 My Stats | 🏆 Leaderboard | 🎖️ Honor | ⚔️ Ranks | 📖 Rules',
       )
       .setColor(0xd4a574)
-      .setFooter({ text: 'Wuxia BoboZan · Turn-based 1v1 duel' });
+      .setFooter({ text: 'Shadow Duel · Turn-based 1v1 duel' });
   }
 
   private buildHubButtons(): ActionRowBuilder<ButtonBuilder>[] {
@@ -135,7 +138,7 @@ export class UserInteractionService {
         });
 
     return new EmbedBuilder()
-      .setTitle('⚔️ Wuxia BoboZan — Leaderboard')
+      .setTitle('⚔️ Shadow Duel — Leaderboard')
       .setDescription(lines.join('\n'))
       .setColor(0xd4a574)
       .setFooter({ text: `${top.length} players` });
@@ -165,7 +168,7 @@ export class UserInteractionService {
         });
 
     const embed = new EmbedBuilder()
-      .setTitle('⚔️ Wuxia BoboZan — Leaderboard')
+      .setTitle('⚔️ Shadow Duel — Leaderboard')
       .setDescription(lines.join('\n'))
       .setColor(0xd4a574)
       .setFooter({ text: `${top.length} players` });
@@ -182,7 +185,7 @@ export class UserInteractionService {
 
     const lines = RANK_TIERS.map(t => `${t.icon} **${t.titleEn}** — ${t.minRating}+ rating`);
     const embed = new EmbedBuilder()
-      .setTitle('⚔️ Wuxia BoboZan — Rank Tiers')
+      .setTitle('⚔️ Shadow Duel — Rank Tiers')
       .setDescription(lines.join('\n'))
       .setColor(0xd4a574)
       .setFooter({ text: 'Default starting rating: 1200 (Martial Artist)' });
@@ -200,11 +203,11 @@ export class UserInteractionService {
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
     if (!channel || !(channel instanceof TextChannel)) return;
 
-    const roundSec = process.env.ROUND_TIMEOUT_SECONDS || '30';
+    const roundSec = process.env.ROUND_TIMEOUT_SECONDS || '20';
     const bothIdleSec = process.env.ROUND_TIMEOUT_BOTH_IDLE_SECONDS || '60';
 
     const embed = new EmbedBuilder()
-      .setTitle('⚔️ Wuxia BoboZan — Rules')
+      .setTitle('⚔️ Shadow Duel — Rules')
       .setColor(0xd4a574)
       .setDescription('1v1 turn-based duel inspired by Chinese martial arts.')
       .addFields(
@@ -233,7 +236,7 @@ export class UserInteractionService {
     if (!channel || !(channel instanceof TextChannel)) return;
 
     const embed = new EmbedBuilder()
-      .setTitle('🏅 Wuxia BoboZan — Honor Points')
+      .setTitle('🏅 Shadow Duel — Honor Points')
       .setColor(0xd4a574)
       .setDescription('Honor is added to the central Honor Points system after each match.')
       .addFields({
@@ -261,7 +264,7 @@ export class UserInteractionService {
 
     const embed = new EmbedBuilder()
       .setTitle('📊 My Stats')
-      .setDescription('Click the button below to see your Wuxia BoboZan stats (only you will see the result).')
+      .setDescription('Click the button below to see your Shadow Duel stats (only you will see the result).')
       .setColor(0xd4a574);
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -275,5 +278,31 @@ export class UserInteractionService {
     const existing = messages.find(m => m.author.id === this.client!.user?.id && m.components.length > 0);
     if (existing) await existing.edit({ embeds: [embed], components: [row] }).catch(() => {});
     else await channel.send({ embeds: [embed], components: [row] });
+  }
+
+  private async setupGuidebookChannel(): Promise<void> {
+    const channelId = process.env.BOBOZAN_GUIDEBOOK_CHANNEL_ID;
+    if (!channelId || !this.client) return;
+
+    const channel = await this.client.channels.fetch(channelId).catch(() => null);
+    if (!channel || !(channel instanceof TextChannel)) return;
+
+    const firstJob = GUIDEBOOK_JOB_ORDER[0] ?? null;
+    if (!firstJob) return;
+
+    const embed = buildGuidebookEmbed(firstJob);
+    const components = buildGuidebookNavComponents(firstJob);
+
+    const messages = await channel.messages.fetch({ limit: 5 });
+    const existing = messages.find(
+      m => m.author.id === this.client!.user?.id && m.embeds.length > 0 && m.embeds[0].title?.startsWith('📖 Guidebook'),
+    );
+
+    if (existing) {
+      await existing.edit({ embeds: [embed], components }).catch(() => {});
+      return;
+    }
+
+    await channel.send({ embeds: [embed], components }).catch(() => {});
   }
 }

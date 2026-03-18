@@ -1,6 +1,6 @@
 # 武侠波波攒 — Flow การทำงาน
 
-## 1. โฟลว์หลัก (ภาพรวม) — 8 ช่อง + ช่องดวลชั่วคราว
+## 1. โฟลว์หลัก (ภาพรวม) — 9 ช่อง + ช่องดวลชั่วคราว
 
 ```mermaid
 flowchart TB
@@ -23,12 +23,13 @@ flowchart TB
     N --> O[คู่ต่อสู้ไป Channel 2 กด รับ หรือ ปฏิเสธ]
     O --> P[รับ → สร้างช่องชั่วคราว → เลือกอาชีพ → เริ่มดวล]
 
-    subgraph info [Channels 4–8: อ่านอย่างเดียว]
+    subgraph info [Channels 4–9: อ่านอย่างเดียว]
         Q[Channel 4: Leaderboard]
         R[Channel 5: Ranks]
         S[Channel 6: Rules]
         T[Channel 7: Honor]
         U[Channel 8: ปุ่ม My Stats]
+        V[Channel 9: Guidebook (อาชีพต่างๆ)]
     end
 ```
 

@@ -1,7 +1,7 @@
 {
   "name": "wuxia-bobozan",
   "version": "1.0.0",
-  "description": "Wuxia BoboZan — round-based combat Discord bot integrated with Honor Points ecosystem",
+  "description": "Shadow Duel — round-based combat Discord bot integrated with Honor Points ecosystem",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",

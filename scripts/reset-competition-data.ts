@@ -1,5 +1,5 @@
 /**
- * One-off script: reset all Wuxia BoboZan competition data (ladder profiles + match history).
+ * One-off script: reset all Shadow Duel competition data (ladder profiles + match history).
  * Use after testing to clear test matches and start fresh.
  *
  * ⚠️ Use the SAME MongoDB as the bot. If the bot runs in Docker with honor-points-service,
