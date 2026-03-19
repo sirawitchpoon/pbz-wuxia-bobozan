@@ -1,6 +1,8 @@
 import {
   Interaction,
   ButtonInteraction,
+  ModalBuilder,
+  ModalSubmitInteraction,
   StringSelectMenuInteraction,
   TextChannel,
   EmbedBuilder,
@@ -11,6 +13,9 @@ import {
   UserSelectMenuInteraction,
   ChannelType,
   PermissionFlagsBits,
+  TextInputBuilder,
+  TextInputStyle,
+  Guild,
 } from 'discord.js';
 import { Action, Job } from '../models/enums';
 import * as SessionManager from '../game/SessionManager';
@@ -19,11 +24,41 @@ import { buildJobSelectEmbed, buildJobSelectMenu } from '../game/JobSelectView';
 import { buildGuidebookEmbed, buildGuidebookNavComponents, GUIDEBOOK_JOB_ORDER } from '../game/GuidebookView';
 import { LadderProfile, getRankForRating, RANK_TIERS } from '../models/LadderProfile';
 import { MatchHistory } from '../models/MatchHistory';
+import { DuelCard } from '../models/DuelCard';
+import { nextDuelDisplayId } from '../models/DuelCounter';
 import * as LadderService from '../services/LadderService';
 import { logger } from '../utils/logger';
+import { connectDB, isDBConnected } from '../utils/connectDB';
+import { Types } from 'mongoose';
 
 const CHALLENGE_EXPIRE_SECONDS = Math.max(60, parseInt(process.env.BOBOZAN_CHALLENGE_EXPIRE_SECONDS ?? '180', 10) || 180);
 const CHALLENGE_EXPIRE_MS = CHALLENGE_EXPIRE_SECONDS * 1000;
+
+function isDuelCardObjectId(s: string): boolean {
+  return /^[a-f0-9]{24}$/i.test(s) && Types.ObjectId.isValid(s);
+}
+
+async function deleteDuelChannelShell(
+  guild: Guild,
+  opts: { categoryId?: string | null; publicId?: string | null; privateAId?: string | null; privateBId?: string | null },
+): Promise<void> {
+  for (const id of [opts.publicId, opts.privateAId, opts.privateBId]) {
+    if (!id) continue;
+    const ch = guild.channels.cache.get(id) || (await guild.channels.fetch(id).catch(() => null));
+    await (ch as { delete?: () => Promise<unknown> })?.delete?.().catch(() => {});
+  }
+  if (opts.categoryId) {
+    const cat = guild.channels.cache.get(opts.categoryId) || (await guild.channels.fetch(opts.categoryId).catch(() => null));
+    await (cat as { delete?: () => Promise<unknown> })?.delete?.().catch(() => {});
+  }
+}
+
+/** Unique per user (avoids duplicate channel names if display names match). */
+function duelUsernameSlug(displayName: string, userId: string): string {
+  const base = displayName.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 14) || 'p';
+  const tail = userId.replace(/\D/g, '').slice(-4) || '0000';
+  return `${base}${tail}`.slice(0, 20);
+}
 
 export const name = 'interactionCreate';
 
@@ -35,6 +70,8 @@ export async function execute(interaction: Interaction): Promise<void> {
       await handleSelect(interaction);
     } else if (interaction.isUserSelectMenu()) {
       await handleUserSelect(interaction);
+    } else if (interaction.isModalSubmit()) {
+      await handleModalSubmit(interaction as ModalSubmitInteraction);
     }
   } catch (err) {
     logger.error('Interaction handler error:', err);
@@ -78,6 +115,10 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
   if (id.startsWith('bobozan_accept_')) return handleAcceptChallenge(interaction);
   if (id.startsWith('bobozan_decline_')) return handleDeclineChallenge(interaction);
 
+  // Public match controls (bug + admin end)
+  if (id.startsWith('bobozan_bug_report:')) return handleBugReportButton(interaction);
+  if (id.startsWith('bobozan_admin_end_match:')) return handleAdminEndMatchButton(interaction);
+
   // Battle action buttons
   if (id.startsWith('bobozan_charge') || id.startsWith('bobozan_attack') ||
       id.startsWith('bobozan_defend') || id.startsWith('bobozan_ultimate') ||
@@ -88,8 +129,8 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
   // Forfeit
   if (id === 'bobozan_forfeit') return handleForfeitButton(interaction);
 
-  // Admin cleanup: delete temp duel channel
-  if (id.startsWith('bobozan_delete_channel:')) return handleDeleteTempChannel(interaction);
+  // Admin cleanup: delete duel channels
+  if (id.startsWith('bobozan_delete_duel_channels:')) return handleDeleteTempChannel(interaction);
 }
 
 // ── Open Challenge ────────────────────────────────────────────────────
@@ -99,6 +140,21 @@ async function handleOpenChallenge(interaction: ButtonInteraction): Promise<void
 
   if (SessionManager.hasActiveSession(user.id)) {
     await interaction.reply({ content: '❌ You are already in a match.', ephemeral: true });
+    return;
+  }
+
+  await connectDB();
+  if (!isDBConnected()) {
+    await interaction.reply({
+      content: '❌ **MONGO_URI** is required for Challenge Cards and duel IDs (e.g. 001).',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({ content: '❌ Post challenges from inside a server only.', ephemeral: true });
     return;
   }
 
@@ -113,35 +169,63 @@ async function handleOpenChallenge(interaction: ButtonInteraction): Promise<void
     return;
   }
 
+  const { displayId, seq } = await nextDuelDisplayId(guildId);
+  const card = await DuelCard.create({
+    guildId,
+    displaySeq: seq,
+    displayId,
+    challengeType: 'open',
+    challengerId: user.id,
+    status: 'open',
+  });
+
   const embed = new EmbedBuilder()
-    .setTitle('⚔️ Open Challenge')
+    .setTitle(`⚔️ Open Challenge · #${displayId}`)
     .setDescription(
       `> **${user.displayName}** is looking for an opponent!\n\n` +
       `Any warrior may step forward and accept.\n` +
       `Press **Accept Challenge** to enter the arena.`,
     )
     .setColor(0xe67e22)
-    .setFooter({ text: `⏱️ Expires in ${CHALLENGE_EXPIRE_SECONDS}s · Open to anyone` });
+    .setFooter({
+      text: `Challenge ID ${displayId} · ⏱️ ${CHALLENGE_EXPIRE_SECONDS}s · Open`,
+    });
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`bobozan_accept_${user.id}`)
+      .setCustomId(`bobozan_accept_${String(card._id)}`)
       .setLabel('⚔️ Accept Challenge')
       .setStyle(ButtonStyle.Success),
   );
 
   await interaction.reply({
-    content: challengeChannelId ? `✅ Challenge posted in <#${challengeChannelId}>` : '✅ Challenge posted.',
+    content: challengeChannelId ? `✅ Challenge **#${displayId}** posted in <#${challengeChannelId}>` : `✅ Challenge **#${displayId}** posted.`,
     ephemeral: true,
   });
 
   const challengeMsg = await targetChannel.send({ embeds: [embed], components: [row] });
+  await DuelCard.updateOne(
+    { _id: card._id },
+    { $set: { challengeChannelId: targetChannel.id, challengeMessageId: challengeMsg.id } },
+  );
 
+  const cardId = String(card._id);
   setTimeout(async () => {
     try {
-      if (!SessionManager.hasActiveSession(user.id)) {
+      const still = await DuelCard.findOneAndUpdate(
+        { _id: card._id, status: 'open' },
+        { $set: { status: 'expired' } },
+        { new: true },
+      );
+      if (still && !SessionManager.hasActiveSession(user.id)) {
         await challengeMsg.edit({
-          embeds: [embed.setFooter({ text: '⏰ Timeout — no one accepted' }).setColor(0x888888)],
+          embeds: [
+            new EmbedBuilder()
+              .setTitle(`⚔️ Open Challenge · #${displayId}`)
+              .setDescription(`> **${user.displayName}** — no one accepted in time.`)
+              .setColor(0x888888)
+              .setFooter({ text: `Challenge ID ${displayId} · Expired` }),
+          ],
           components: [],
         });
       }
@@ -204,7 +288,21 @@ async function handleUserSelect(interaction: UserSelectMenuInteraction): Promise
     return;
   }
 
-  // Post challenge card to channel 2 (challenge channel)
+  await connectDB();
+  if (!isDBConnected()) {
+    await interaction.reply({
+      content: '❌ **MONGO_URI** is required for Challenge Cards.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const guildId = interaction.guildId;
+  if (!guildId) {
+    await interaction.reply({ content: '❌ Use this from inside a server only.', ephemeral: true });
+    return;
+  }
+
   const challengeChannelId = process.env.BOBOZAN_CHALLENGE_CHANNEL_ID;
   const targetChannel = challengeChannelId
     ? await interaction.client.channels.fetch(challengeChannelId).catch(() => null)
@@ -216,35 +314,61 @@ async function handleUserSelect(interaction: UserSelectMenuInteraction): Promise
     return;
   }
 
+  const { displayId, seq } = await nextDuelDisplayId(guildId);
+  const card = await DuelCard.create({
+    guildId,
+    displaySeq: seq,
+    displayId,
+    challengeType: 'targeted',
+    challengerId,
+    targetUserId: opponent.id,
+    status: 'open',
+  });
+
   const embed = new EmbedBuilder()
-    .setTitle('🎯 Target Challenge')
+    .setTitle(`🎯 Target Challenge · #${displayId}`)
     .setDescription(
       `> **${interaction.user.displayName}** has challenged **${opponent.displayName}**!\n\n` +
       `${opponent}, will you accept this duel?`,
     )
     .setColor(0xe74c3c)
-    .setFooter({ text: `⏱️ Expires in ${CHALLENGE_EXPIRE_SECONDS}s · Targeted challenge` });
+    .setFooter({ text: `Challenge ID ${displayId} · ⏱️ ${CHALLENGE_EXPIRE_SECONDS}s` });
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
-      .setCustomId(`bobozan_accept_${challengerId}`)
+      .setCustomId(`bobozan_accept_${String(card._id)}`)
       .setLabel('✅ Accept')
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
-      .setCustomId(`bobozan_decline_${challengerId}`)
+      .setCustomId(`bobozan_decline_${String(card._id)}`)
       .setLabel('❌ Decline')
       .setStyle(ButtonStyle.Danger),
   );
 
-  await interaction.update({ content: `✅ Challenge sent to ${opponent.displayName}.`, components: [] });
+  await interaction.update({ content: `✅ Challenge **#${displayId}** sent to ${opponent.displayName}.`, components: [] });
   const challengeMsg = await channelToPost.send({ content: `<@${opponent.id}>`, embeds: [embed], components: [row] });
+  await DuelCard.updateOne(
+    { _id: card._id },
+    { $set: { challengeChannelId: channelToPost.id, challengeMessageId: challengeMsg.id } },
+  );
 
   setTimeout(async () => {
     try {
-      if (!SessionManager.hasActiveSession(challengerId)) {
+      const still = await DuelCard.findOneAndUpdate(
+        { _id: card._id, status: 'open' },
+        { $set: { status: 'expired' } },
+        { new: true },
+      );
+      if (still && !SessionManager.hasActiveSession(challengerId)) {
         await challengeMsg.edit({
           content: '',
-          embeds: [embed.setFooter({ text: '⏰ Timeout — challenge expired' }).setColor(0x888888)],
+          embeds: [
+            new EmbedBuilder()
+              .setTitle(`🎯 Target Challenge · #${displayId}`)
+              .setDescription(`> Challenge expired.`)
+              .setColor(0x888888)
+              .setFooter({ text: `Challenge ID ${displayId} · Expired` }),
+          ],
           components: [],
         });
       }
@@ -255,26 +379,75 @@ async function handleUserSelect(interaction: UserSelectMenuInteraction): Promise
 // ── Accept / Decline ──────────────────────────────────────────────────
 
 async function handleAcceptChallenge(interaction: ButtonInteraction): Promise<void> {
-  const challengerId = interaction.customId.replace('bobozan_accept_', '');
+  const cardIdStr = interaction.customId.replace('bobozan_accept_', '');
   const acceptor = interaction.user;
 
-  if (acceptor.id === challengerId) {
-    await interaction.reply({ content: '❌ You cannot accept your own challenge.', ephemeral: true });
+  if (!isDuelCardObjectId(cardIdStr)) {
+    await interaction.reply({
+      content: '❌ This challenge is invalid or outdated — please post a new challenge.',
+      ephemeral: true,
+    });
     return;
   }
 
+  await connectDB();
+  if (!isDBConnected()) {
+    await interaction.reply({ content: '❌ Database is unavailable.', ephemeral: true });
+    return;
+  }
+
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ content: '❌ Guild not found.', ephemeral: true });
+    return;
+  }
+
+  const updated = await DuelCard.findOneAndUpdate(
+    {
+      _id: new Types.ObjectId(cardIdStr),
+      status: 'open',
+      guildId: guild.id,
+      $or: [
+        { challengeType: 'open', challengerId: { $ne: acceptor.id } },
+        { challengeType: 'targeted', targetUserId: acceptor.id },
+      ],
+    },
+    { $set: { acceptorId: acceptor.id, status: 'accepted' } },
+    { new: true },
+  );
+
+  if (!updated) {
+    const exists = await DuelCard.findById(cardIdStr).lean();
+    if (!exists) {
+      await interaction.reply({ content: '❌ Challenge card not found.', ephemeral: true });
+    } else if (exists.status !== 'open') {
+      await interaction.reply({ content: '❌ This challenge was already accepted, expired, or closed.', ephemeral: true });
+    } else if (exists.challengeType === 'targeted' && exists.targetUserId !== acceptor.id) {
+      await interaction.reply({ content: '❌ Only the challenged player can accept this duel.', ephemeral: true });
+    } else {
+      await interaction.reply({ content: '❌ You cannot accept your own challenge.', ephemeral: true });
+    }
+    return;
+  }
+
+  const challengerId = updated.challengerId;
+  const displayId = updated.displayId;
+
   if (SessionManager.hasActiveSession(acceptor.id)) {
+    await DuelCard.updateOne({ _id: updated._id }, { $set: { status: 'open' }, $unset: { acceptorId: 1 } });
     await interaction.reply({ content: '❌ You are already in a match.', ephemeral: true });
     return;
   }
 
   if (SessionManager.hasActiveSession(challengerId)) {
+    await DuelCard.updateOne({ _id: updated._id }, { $set: { status: 'open' }, $unset: { acceptorId: 1 } });
     await interaction.reply({ content: '❌ The challenger is already in a match.', ephemeral: true });
     return;
   }
 
   const challenger = await interaction.client.users.fetch(challengerId).catch(() => null);
   if (!challenger) {
+    await DuelCard.updateOne({ _id: updated._id }, { $set: { status: 'open' }, $unset: { acceptorId: 1 } });
     await interaction.reply({ content: '❌ Challenger not found.', ephemeral: true });
     return;
   }
@@ -288,63 +461,176 @@ async function handleAcceptChallenge(interaction: ButtonInteraction): Promise<vo
   );
   SessionManager.registerSession(session);
 
-  const guild = interaction.guild;
-  if (!guild) {
-    await interaction.reply({ content: '❌ Guild not found.', ephemeral: true });
-    return;
-  }
-
-  // Create temp channel: visible only to the two players and admins
-  const safeName = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 10) || 'player';
-  const channelName = `duel-${safeName(challenger.displayName)}-vs-${safeName(acceptor.displayName)}`;
   const adminRoleId = process.env.BOBOZAN_ADMIN_ROLE_ID;
+  const prefix = (process.env.BOBOZAN_DUEL_CHANNEL_PREFIX || 'sd').toLowerCase().replace(/[^a-z0-9]/g, '') || 'sd';
+  const slugA = duelUsernameSlug(challenger.displayName, challengerId);
+  const slugB = duelUsernameSlug(acceptor.displayName, acceptor.id);
+  const pubName = `${prefix}${displayId}-combat-log`.toLowerCase().slice(0, 100);
+  const privAName = `${prefix}${displayId}-${slugA}`.toLowerCase().slice(0, 100);
+  const privBName = `${prefix}${displayId}-${slugB}`.toLowerCase().slice(0, 100);
 
-  const permissionOverwrites: { id: string; allow?: bigint; deny?: bigint }[] = [
+  const categoryBaseOverwrites: { id: string; allow?: bigint; deny?: bigint }[] = [
     { id: guild.id, deny: PermissionFlagsBits.ViewChannel },
     { id: challengerId, allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ReadMessageHistory },
     { id: acceptor.id, allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ReadMessageHistory },
   ];
   if (adminRoleId) {
-    permissionOverwrites.push({ id: adminRoleId, allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.ReadMessageHistory });
+    categoryBaseOverwrites.push({
+      id: adminRoleId,
+      allow:
+        PermissionFlagsBits.ViewChannel |
+        PermissionFlagsBits.SendMessages |
+        PermissionFlagsBits.ReadMessageHistory |
+        PermissionFlagsBits.ManageChannels,
+    });
   }
 
-  const tempChannel = await guild.channels.create({
-    name: channelName,
-    type: ChannelType.GuildText,
-    permissionOverwrites,
-  });
+  let category: { id: string };
+  let publicChannel: TextChannel;
+  let privateAChannel: TextChannel;
+  let privateBChannel: TextChannel;
 
-  // Update challenge message to point to temp channel
+  try {
+    category = await guild.channels.create({
+      name: `Shadow Duel - ${displayId}`,
+      type: ChannelType.GuildCategory,
+      permissionOverwrites: categoryBaseOverwrites,
+    });
+
+    const pubOver = [
+      { id: guild.id, deny: PermissionFlagsBits.ViewChannel },
+      {
+        id: challengerId,
+        allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ReadMessageHistory,
+      },
+      {
+        id: acceptor.id,
+        allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ReadMessageHistory,
+      },
+      ...(adminRoleId
+        ? [{ id: adminRoleId, allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.ReadMessageHistory }]
+        : []),
+    ];
+
+    const privAOver = [
+      { id: guild.id, deny: PermissionFlagsBits.ViewChannel },
+      {
+        id: challengerId,
+        allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ReadMessageHistory,
+      },
+      { id: acceptor.id, deny: PermissionFlagsBits.ViewChannel },
+      ...(adminRoleId
+        ? [{ id: adminRoleId, allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.ReadMessageHistory }]
+        : []),
+    ];
+
+    const privBOver = [
+      { id: guild.id, deny: PermissionFlagsBits.ViewChannel },
+      { id: challengerId, deny: PermissionFlagsBits.ViewChannel },
+      {
+        id: acceptor.id,
+        allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ReadMessageHistory,
+      },
+      ...(adminRoleId
+        ? [{ id: adminRoleId, allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.ReadMessageHistory }]
+        : []),
+    ];
+
+    publicChannel = (await guild.channels.create({
+      name: pubName,
+      type: ChannelType.GuildText,
+      parent: category.id,
+      permissionOverwrites: pubOver,
+    })) as TextChannel;
+
+    privateAChannel = (await guild.channels.create({
+      name: privAName,
+      type: ChannelType.GuildText,
+      parent: category.id,
+      permissionOverwrites: privAOver,
+    })) as TextChannel;
+
+    privateBChannel = (await guild.channels.create({
+      name: privBName,
+      type: ChannelType.GuildText,
+      parent: category.id,
+      permissionOverwrites: privBOver,
+    })) as TextChannel;
+  } catch (err) {
+    logger.error('Failed to create duel category/channels:', err);
+    SessionManager.removeSession(session);
+    await DuelCard.updateOne({ _id: updated._id }, { $set: { status: 'open' }, $unset: { acceptorId: 1 } });
+    await interaction.reply({
+      content: '❌ Failed to create duel channels — check bot permissions (Manage Channels).',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await DuelCard.updateOne(
+    { _id: updated._id },
+    {
+      $set: {
+        status: 'in_match',
+        categoryId: category.id,
+        publicChannelId: publicChannel.id,
+        privateChannelAId: privateAChannel.id,
+        privateChannelBId: privateBChannel.id,
+      },
+    },
+  );
+
+  session.attachChannels(publicChannel, privateAChannel, privateBChannel);
+  session.setDuelCardMeta(String(updated._id), displayId, guild.id);
+
   await interaction.update({
     embeds: [
       new EmbedBuilder()
-        .setTitle('⚔️ Challenge Accepted!')
+        .setTitle(`⚔️ Challenge Accepted · #${displayId}`)
         .setDescription(
           `🟥 **${challenger.displayName}**  ╳  🟦 **${acceptor.displayName}**\n\n` +
-          `> The duel has begun in ${tempChannel}`,
+          `> Duel **#${displayId}** — Combat log: <#${publicChannel.id}>`,
         )
         .setColor(0x2ecc71)
-        .setFooter({ text: 'Shadow Duel · May the best warrior win' }),
+        .setFooter({ text: `Shadow Duel #${displayId}` }),
     ],
     components: [],
   });
 
-  // Send job selection in the temp channel (battle will run here)
+  await publicChannel.send({
+    content:
+      `${challenger} ${acceptor}\n\n` +
+      `**Shadow Duel #${displayId}** — This channel is the **Combat Log** (round summary, bug report, and admin tools).\n\n` +
+      `🎮 **Choose your class and actions only in your private room:**\n` +
+      `• **${challenger.displayName}** → <#${privateAChannel.id}>\n` +
+      `• **${acceptor.displayName}** → <#${privateBChannel.id}>\n\n` +
+      `_Do not play from this channel — use your private room so your opponent cannot see your choices._`,
+  });
+
   const selectEmbed = buildJobSelectEmbed(challenger.displayName, acceptor.displayName);
   const selectMenu = buildJobSelectMenu();
-  await tempChannel.send({ content: `${challenger} ${acceptor} — Choose your class below.`, embeds: [selectEmbed], components: [selectMenu] });
+  await privateAChannel.send({
+    content: `${challenger} — Choose your class below (only you can see this channel).`,
+    embeds: [selectEmbed],
+    components: [selectMenu],
+  });
+  await privateBChannel.send({
+    content: `${acceptor} — Choose your class below (only you can see this channel).`,
+    embeds: [selectEmbed],
+    components: [selectMenu],
+  });
 
+  const cardOid = String(updated._id);
   setTimeout(async () => {
     if (!session.bothJobsSelected) {
       SessionManager.removeSession(session);
+      await DuelCard.updateOne({ _id: updated._id }, { $set: { status: 'cancelled' } }).catch(() => {});
       try {
-        await tempChannel.send({
-          embeds: [
-            new EmbedBuilder()
-              .setTitle('⏰ Class selection timeout')
-              .setDescription('Match cancelled.')
-              .setColor(0x888888),
-          ],
+        await deleteDuelChannelShell(guild, {
+          categoryId: category.id,
+          publicId: publicChannel.id,
+          privateAId: privateAChannel.id,
+          privateBId: privateBChannel.id,
         });
       } catch {}
     }
@@ -352,18 +638,160 @@ async function handleAcceptChallenge(interaction: ButtonInteraction): Promise<vo
 }
 
 async function handleDeclineChallenge(interaction: ButtonInteraction): Promise<void> {
-  const challengerId = interaction.customId.replace('bobozan_decline_', '');
+  const cardIdStr = interaction.customId.replace('bobozan_decline_', '');
+  if (!isDuelCardObjectId(cardIdStr)) {
+    await interaction.reply({ content: '❌ This challenge has expired.', ephemeral: true });
+    return;
+  }
 
-  // Only the challenged person or the challenger can decline
+  await connectDB();
+  const card = await DuelCard.findById(cardIdStr).lean();
+  if (!card || card.status !== 'open' || card.challengeType !== 'targeted') {
+    await interaction.reply({
+      content: '❌ You cannot decline this (not a targeted challenge or it is already closed).',
+      ephemeral: true,
+    });
+    return;
+  }
+  if (card.targetUserId !== interaction.user.id) {
+    await interaction.reply({ content: '❌ Only the challenged player can decline.', ephemeral: true });
+    return;
+  }
+
+  await DuelCard.updateOne({ _id: card._id }, { $set: { status: 'declined' } });
   await interaction.update({
     embeds: [
       new EmbedBuilder()
-        .setTitle('❌ Challenge declined')
+        .setTitle(`❌ Challenge declined · #${card.displayId}`)
         .setDescription(`${interaction.user.displayName} declined the challenge.`)
         .setColor(0x888888),
     ],
     components: [],
   });
+}
+
+// ── Public Controls (Bug report / Admin end) ─────────────────────────
+
+function isAdmin(interaction: ButtonInteraction): boolean {
+  const adminRoleId = process.env.BOBOZAN_ADMIN_ROLE_ID;
+  const member = interaction.member as any;
+
+  const hasRole = Boolean(
+    adminRoleId &&
+      member &&
+      member.roles?.cache &&
+      typeof member.roles.cache.has === 'function' &&
+      member.roles.cache.has(adminRoleId),
+  );
+
+  const hasManageChannels = interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels) ?? false;
+  return hasRole || hasManageChannels;
+}
+
+async function handleBugReportButton(interaction: ButtonInteraction): Promise<void> {
+  const id = interaction.customId;
+  const publicChannelId = id.split(':')[1];
+  if (!publicChannelId) {
+    await interaction.reply({ content: '❌ Invalid target.', ephemeral: true });
+    return;
+  }
+
+  const modal = new ModalBuilder()
+    .setCustomId(`bobozan_bug_modal:${publicChannelId}`)
+    .setTitle('🐞 Shadow Duel Bug Report')
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('bug_description')
+          .setLabel('Describe the bug (what happened, expected vs actual)')
+          .setStyle(TextInputStyle.Paragraph)
+          .setRequired(true),
+      ),
+    );
+
+  await interaction.showModal(modal);
+}
+
+async function handleAdminEndMatchButton(interaction: ButtonInteraction): Promise<void> {
+  if (!isAdmin(interaction)) {
+    await interaction.reply({ content: '❌ Admins only.', ephemeral: true });
+    return;
+  }
+
+  const id = interaction.customId;
+  const publicChannelId = id.split(':')[1];
+  if (!publicChannelId) {
+    await interaction.reply({ content: '❌ Invalid target.', ephemeral: true });
+    return;
+  }
+
+  const session = SessionManager.getSessionByPublicChannelId(publicChannelId);
+  if (!session) {
+    await interaction.reply({ content: '❌ Match not found (expired).', ephemeral: true });
+    return;
+  }
+
+  await interaction.deferUpdate().catch(() => {});
+  await session.adminEndAsDraw();
+  await interaction.followUp({ content: '🏳️ Admin ended match as Draw.', ephemeral: true }).catch(() => {});
+}
+
+async function handleModalSubmit(interaction: ModalSubmitInteraction): Promise<void> {
+  if (!interaction.customId.startsWith('bobozan_bug_modal:')) return;
+
+  const publicChannelId = interaction.customId.split(':')[1];
+  if (!publicChannelId) {
+    await interaction.reply({ content: '❌ Invalid bug target.', ephemeral: true });
+    return;
+  }
+
+  const bugText = interaction.fields.getTextInputValue('bug_description')?.trim();
+  if (!bugText) {
+    await interaction.reply({ content: '❌ Bug description is required.', ephemeral: true });
+    return;
+  }
+
+  const forumId = process.env.SHADOW_DUEL_FORUMS_CHANNEL_ID;
+  if (!forumId) {
+    await interaction.reply({ content: '❌ Forums channel is not configured in env.', ephemeral: true });
+    return;
+  }
+
+  if (!interaction.guild) {
+    await interaction.reply({ content: '❌ Guild not found.', ephemeral: true });
+    return;
+  }
+
+  const forumChannel = await interaction.guild.channels.fetch(forumId).catch(() => null);
+  if (!forumChannel) {
+    await interaction.reply({ content: '❌ Forums channel not found.', ephemeral: true });
+    return;
+  }
+
+  try {
+    const session = SessionManager.getSessionByPublicChannelId(publicChannelId);
+    const reporter = interaction.user;
+
+    const content =
+      `**Bug report**\n\n` +
+      `Reporter: ${reporter} (${reporter.username})\n` +
+      `Duel public channel: <#${publicChannelId}>\n` +
+      (session ? `Participants: duel is active.\n` : `Participants: session not found (maybe ended).\n`) +
+      `\n---\n${bugText}`;
+
+    const createdThread = await (forumChannel as any).threads.create({
+      name: `ShadowDuel Bug — ${reporter.username}`,
+      autoArchiveDuration: 1440,
+      message: { content },
+    });
+
+    await interaction.reply({
+      content: `✅ Bug submitted. Thread created: ${createdThread?.url ?? createdThread?.name ?? ''}`,
+      ephemeral: true,
+    });
+  } catch (err) {
+    await interaction.reply({ content: '❌ Failed to create forums thread. Check bot permissions.', ephemeral: true });
+  }
 }
 
 // ── Battle Actions ────────────────────────────────────────────────────
@@ -414,16 +842,33 @@ async function handleForfeitButton(interaction: ButtonInteraction): Promise<void
 }
 
 async function handleDeleteTempChannel(interaction: ButtonInteraction): Promise<void> {
-  const parts = interaction.customId.split(':');
-  const channelId = parts[1];
-  const ch = interaction.channel;
+  const raw = interaction.customId.replace('bobozan_delete_duel_channels:', '');
+  let publicChannelId: string | null = null;
+  let privateAChannelId: string | null = null;
+  let privateBChannelId: string | null = null;
+  let categoryId: string | null = null;
 
-  if (!channelId || !ch || ch.id !== channelId) {
-    await interaction.reply({ content: '❌ Invalid channel target.', ephemeral: true });
+  if (isDuelCardObjectId(raw)) {
+    await connectDB();
+    const card = await DuelCard.findById(raw).lean();
+    if (card) {
+      publicChannelId = card.publicChannelId ?? null;
+      privateAChannelId = card.privateChannelAId ?? null;
+      privateBChannelId = card.privateChannelBId ?? null;
+      categoryId = card.categoryId ?? null;
+    }
+  } else {
+    const parts = raw.split(':');
+    publicChannelId = parts[0] ?? null;
+    privateAChannelId = parts[1] ?? null;
+    privateBChannelId = parts[2] ?? null;
+  }
+
+  if (!publicChannelId || !privateAChannelId || !privateBChannelId) {
+    await interaction.reply({ content: '❌ Invalid duel channel target.', ephemeral: true });
     return;
   }
 
-  // Admin check: either has configured admin role, or has Manage Channels permission.
   const adminRoleId = process.env.BOBOZAN_ADMIN_ROLE_ID;
   const member = interaction.member as any;
   const hasRole = Boolean(
@@ -440,12 +885,19 @@ async function handleDeleteTempChannel(interaction: ButtonInteraction): Promise<
     return;
   }
 
-  await interaction.reply({ content: '🗑️ Deleting channel...', ephemeral: true }).catch(() => {});
-  await (ch as any).delete().catch(async () => {
-    await interaction.followUp({
-      content: '❌ Failed to delete channel. Check bot permissions (Manage Channels).',
-      ephemeral: true,
-    }).catch(() => {});
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ content: '❌ Guild not found.', ephemeral: true });
+    return;
+  }
+
+  await interaction.reply({ content: '🗑️ Deleting duel channels...', ephemeral: true }).catch(() => {});
+
+  await deleteDuelChannelShell(guild, {
+    categoryId,
+    publicId: publicChannelId,
+    privateAId: privateAChannelId,
+    privateBId: privateBChannelId,
   });
 }
 
@@ -674,7 +1126,6 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
   });
 
   if (session.bothJobsSelected) {
-    const channel = interaction.channel as TextChannel;
     try {
       await interaction.message.edit({
         content: '⚔️ Both chose their class. Duel starting!',
@@ -682,7 +1133,7 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
         components: [],
       });
     } catch {}
-    await session.startBattle(channel);
+    await session.startBattle();
   }
 }
 

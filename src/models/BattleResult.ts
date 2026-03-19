@@ -25,4 +25,10 @@ export interface BattleResult {
   totalRounds: number;
   endedByForfeit: boolean;
   endedByTimeout: boolean;
+
+  /** Mongo DuelCard _id for dashboards / match history linkage */
+  duelCardId?: string;
+  /** Human-readable duel id e.g. 001 */
+  duelDisplayId?: string;
+  guildId?: string;
 }

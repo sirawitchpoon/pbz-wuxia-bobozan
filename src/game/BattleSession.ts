@@ -32,14 +32,27 @@ export class BattleSession {
   private playerB: Player | null = null;
 
   private round: number = 0;
-  // Layout in temp duel channel:
-  // - logMessage: top embed (combat log - full match)
-  // - timerMessage: middle embed (timeline + time info)
-  // - battleMessage: bottom embed (HP bars + action buttons)
+  // Layout:
+  // - public channel: combat log
+  // - private A/B channels: timeline + control embeds
   private timerMessage: Message | null = null;
   private logMessage: Message | null = null;
   private battleMessage: Message | null = null;
+  // NOTE: `channel` is now used as the public channel for combat log.
   private channel: TextChannel | null = null;
+
+  private privateChannelA: TextChannel | null = null;
+  private privateChannelB: TextChannel | null = null;
+
+  private timerMessageA: Message | null = null;
+  private timerMessageB: Message | null = null;
+  private battleMessageA: Message | null = null;
+  private battleMessageB: Message | null = null;
+
+  // Sequential selection turn controller:
+  // - null means "first click defines the acting player"
+  // - otherwise only that user can select actions for the current turn
+  private selectionTurnUserId: string | null = null;
   private roundTimer: NodeJS.Timeout | null = null;
   private roundTick: NodeJS.Timeout | null = null;
   private roundEndsAtMs: number | null = null;
@@ -48,6 +61,11 @@ export class BattleSession {
   private settled: boolean = false;
   private lastRoundLog: RoundLog | null = null;
   private combatLogLines: string[] = [];
+
+  /** Persisted duel card (dashboard / delete cleanup) */
+  private duelCardId: string | null = null;
+  private duelDisplayId: string | null = null;
+  private duelGuildId: string | null = null;
 
   constructor(
     client: Client,
@@ -61,6 +79,29 @@ export class BattleSession {
     this.playerAName = playerAName;
     this.playerBId = playerBId;
     this.playerBName = playerBName;
+  }
+
+  attachChannels(publicChannel: TextChannel, privateAChannel: TextChannel, privateBChannel: TextChannel): void {
+    this.channel = publicChannel;
+    this.privateChannelA = privateAChannel;
+    this.privateChannelB = privateBChannel;
+    this.duelGuildId = publicChannel.guildId ?? this.duelGuildId;
+
+    // Reset message refs for safety (in case a session object is reused).
+    this.logMessage = null;
+    this.timerMessage = null;
+    this.battleMessage = null;
+    this.timerMessageA = null;
+    this.timerMessageB = null;
+    this.battleMessageA = null;
+    this.battleMessageB = null;
+    this.selectionTurnUserId = null;
+  }
+
+  setDuelCardMeta(cardId: string, displayId: string, guildId: string): void {
+    this.duelCardId = cardId;
+    this.duelDisplayId = displayId;
+    this.duelGuildId = guildId;
   }
 
   // ── Job Selection ───────────────────────────────────────────────────
@@ -85,17 +126,22 @@ export class BattleSession {
 
   // ── Battle Lifecycle ────────────────────────────────────────────────
 
-  async startBattle(channel: TextChannel): Promise<void> {
+  async startBattle(): Promise<void> {
     if (!this.playerA || !this.playerB) return;
 
-    this.channel = channel;
     this.round = 1;
     this.roundIdleExtended = false;
+    this.selectionTurnUserId = null;
     this.combatLogLines = [];
     this.appendCombatLogLine(`⚔️ Duel started: **${this.playerAName}** vs **${this.playerBName}**`);
     this.appendCombatLogLine(`— Round 1 —`);
 
-    await this.ensureLayoutMessages(channel);
+    if (!this.channel || !this.privateChannelA || !this.privateChannelB) {
+      logger.error('BattleSession.startBattle called without attaching channels');
+      return;
+    }
+
+    await this.ensureLayoutMessages();
 
     await Promise.all([
       this.updateTimerEmbed(false, false).catch(() => {}),
@@ -115,6 +161,17 @@ export class BattleSession {
       return;
     }
 
+    // Sequential gating:
+    // - First valid click defines the acting player for this round.
+    // - The other player is blocked until the acting player locks a main action.
+    if (this.selectionTurnUserId && this.selectionTurnUserId !== userId) {
+      await interaction.reply({
+        content: '⏳ Not your turn to lock in yet — wait for the other player.',
+        ephemeral: true,
+      });
+      return;
+    }
+
     // Validate action
     const validation = this.validateAction(player, action);
     if (validation) {
@@ -122,30 +179,27 @@ export class BattleSession {
       return;
     }
 
+    // After validation succeeds, the first click sets the acting player.
+    if (this.selectionTurnUserId === null) {
+      this.selectionTurnUserId = userId;
+    }
+
     // Acknowledge immediately so Discord doesn't show "interaction failed".
     interaction.deferUpdate().catch(() => {});
 
     if (action === Action.SetTrap) {
       player.wantsSetTrap = true;
-      const name = userId === this.playerAId ? this.playerAName : this.playerBName;
-      this.appendCombatLogLine(`⚙️ **${name}** prepared a trap.`);
-      await Promise.all([
-        this.updateLogEmbed().catch(() => {}),
-        this.updateBattleEmbed(),
-      ]);
+      await this.updateBattleEmbed();
       return;
     }
 
     player.action = action;
     player.actionLocked = true;
 
-    const name = userId === this.playerAId ? this.playerAName : this.playerBName;
-    this.appendCombatLogLine(`✅ **${name}** locked in.`);
+    // Switch selection turn to the opponent (only after a main action is locked).
+    this.selectionTurnUserId = this.getOpponentId(userId);
 
-    await Promise.all([
-      this.updateLogEmbed().catch(() => {}),
-      this.updateBattleEmbed(),
-    ]);
+    await this.updateBattleEmbed();
 
     // If both locked in, resolve
     if (this.playerA!.actionLocked && this.playerB!.actionLocked) {
@@ -167,6 +221,23 @@ export class BattleSession {
     const result = this.buildBattleResult(false, true);
     await this.settleMatch(result);
     return true;
+  }
+
+  getPublicChannelId(): string | null {
+    return this.channel?.id ?? null;
+  }
+
+  /** Admin action: end the match immediately as a draw. */
+  async adminEndAsDraw(): Promise<void> {
+    if (this.settled || !this.playerA || !this.playerB) return;
+
+    this.playerA.hp = 0;
+    this.playerB.hp = 0;
+    this.settled = true;
+    this.clearRoundTimer();
+
+    const result = this.buildBattleResult(false, false);
+    await this.settleMatch(result);
   }
 
   // ── Round Resolution ────────────────────────────────────────────────
@@ -193,6 +264,8 @@ export class BattleSession {
 
     this.round++;
     this.roundIdleExtended = false;
+    // Next round: allow both players to choose again; first valid click defines the acting player.
+    this.selectionTurnUserId = null;
     this.appendCombatLogLine(`— Round ${this.round} —`);
     await Promise.all([
       this.updateLogEmbed().catch(() => {}),
@@ -206,8 +279,8 @@ export class BattleSession {
     try {
       const settlement = await SettlementService.settle(result);
 
-      // Build final result embed
-      if (this.battleMessage && this.playerA && this.playerB) {
+      // Build final result embed (shown to both players in their private channels).
+      if (this.playerA && this.playerB) {
         const isDraw = result.isDraw;
         const winnerName = isDraw ? null : (result.winnerId === result.playerAId ? this.playerAName : this.playerBName);
         const loserName = isDraw ? null : (result.winnerId === result.playerAId ? this.playerBName : this.playerAName);
@@ -235,13 +308,13 @@ export class BattleSession {
         embed.addFields(
           {
             name: `🟥 ${this.playerAName}`,
-            value: this.renderPlayerStatus(pA),
+            value: this.renderPlayerStatus(pA, null),
             inline: true,
           },
           { name: '\u200b', value: '\u200b', inline: true },
           {
             name: `🟦 ${this.playerBName}`,
-            value: this.renderPlayerStatus(pB),
+            value: this.renderPlayerStatus(pB, null),
             inline: true,
           },
         );
@@ -285,8 +358,19 @@ export class BattleSession {
         );
 
         embed.setFooter({ text: 'Match complete · Stats updated' });
+        // Also append a match-ended summary into the public combat log.
+        if (winnerName) {
+          this.appendCombatLogLine(`🏁 Match ended — **${winnerName}** wins over **${loserName}** (${result.totalRounds} rounds).`);
+        } else if (isDraw) {
+          this.appendCombatLogLine(`🏁 Match ended — Draw (${result.totalRounds} rounds).`);
+        }
 
-        await this.battleMessage.edit({ embeds: [embed], components: [] });
+        await Promise.all([
+          this.battleMessageA?.edit({ embeds: [embed], components: [] }).catch(() => {}),
+          this.battleMessageB?.edit({ embeds: [embed], components: [] }).catch(() => {}),
+          // Refresh public log (and remove any public action buttons after settlement).
+          this.logMessage?.edit({ embeds: [this.buildLogEmbed()], components: [] }).catch(() => {}),
+        ]);
       }
 
       // Post to public match history channel (channel 3)
@@ -331,7 +415,13 @@ export class BattleSession {
     this.roundTimer = setTimeout(async () => {
       if (this.settled || !this.playerA || !this.playerB) return;
 
-      const bothIdle = !this.playerA.actionLocked && !this.playerB.actionLocked;
+      // "Idle" means: neither main action locked nor trap prepared.
+      // This prevents premature draw when players only set traps.
+      const bothIdle =
+        !this.playerA.actionLocked &&
+        !this.playerA.wantsSetTrap &&
+        !this.playerB.actionLocked &&
+        !this.playerB.wantsSetTrap;
 
       if (bothIdle && !this.roundIdleExtended) {
         // Give both players extra time before declaring draw
@@ -342,13 +432,33 @@ export class BattleSession {
         await this.updateTimerEmbed(true, false).catch(() => {});
         this.roundTimer = setTimeout(async () => {
           if (this.settled || !this.playerA || !this.playerB) return;
-          if (!this.playerA.actionLocked && !this.playerB.actionLocked) {
+          const bothNoChoices =
+            !this.playerA.actionLocked &&
+            !this.playerA.wantsSetTrap &&
+            !this.playerB.actionLocked &&
+            !this.playerB.wantsSetTrap;
+
+          if (bothNoChoices) {
             this.playerA.hp = 0;
             this.playerB.hp = 0;
             this.settled = true;
             const result = this.buildBattleResult(true, false);
             await this.settleMatch(result);
+            return;
           }
+
+          // Someone prepared a trap, but neither locked a main action yet:
+          // resolve the round normally with action=null for those who didn't pick.
+          if (!this.playerA.actionLocked) {
+            this.playerA.actionLocked = true;
+            this.playerA.action = null;
+          }
+          if (!this.playerB.actionLocked) {
+            this.playerB.actionLocked = true;
+            this.playerB.action = null;
+          }
+          this.clearRoundTimer();
+          await this.resolveCurrentRound();
         }, ROUND_TIMEOUT_BOTH_IDLE_MS);
         return;
       }
@@ -464,11 +574,20 @@ export class BattleSession {
       .setColor(0x2c3e50);
   }
 
-  private buildBattleEmbed(): EmbedBuilder {
+  private buildPrivateControlEmbed(viewerId: string): EmbedBuilder {
     const pA = this.playerA;
     const pB = this.playerB;
-    const lockedA = pA?.actionLocked ?? false;
-    const lockedB = pB?.actionLocked ?? false;
+    if (!pA || !pB) {
+      return new EmbedBuilder()
+        .setTitle(`⚔️ Round ${this.round}`)
+        .setDescription('Initializing duel...')
+        .setColor(0x5865f2);
+    }
+
+    const viewerPlayer = viewerId === this.playerAId ? pA : pB;
+    const opponentPlayer = viewerId === this.playerAId ? pB : pA;
+    const viewerLocked = viewerPlayer.actionLocked;
+    const opponentLocked = opponentPlayer.actionLocked;
 
     // Dynamic color: critical HP → red, normal → battle blue
     let color = 0x5865f2;
@@ -478,55 +597,139 @@ export class BattleSession {
       .setTitle(`⚔️ Round ${this.round}`)
       .setColor(color);
 
-    if (pA && pB) {
-      const jobA = JOB_DISPLAY_EN[pA.job].name;
-      const jobB = JOB_DISPLAY_EN[pB.job].name;
+    const jobA = JOB_DISPLAY_EN[pA.job].name;
+    const jobB = JOB_DISPLAY_EN[pB.job].name;
 
-      // Turn status indicator line
-      let statusLine: string;
-      if (!this.settled) {
-        if (lockedA && !lockedB) {
-          statusLine = `✅ **${this.playerAName}** ready  ·  ⏳ Waiting for **${this.playerBName}**...`;
-        } else if (!lockedA && lockedB) {
-          statusLine = `⏳ Waiting for **${this.playerAName}**...  ·  ✅ **${this.playerBName}** ready`;
-        } else if (lockedA && lockedB) {
-          statusLine = `✅ Both locked in — resolving...`;
-        } else {
-          statusLine = `⚔️ Both choosing — actions are **hidden** from your opponent`;
-        }
-        embed.setDescription(
-          `🟥 **${this.playerAName}** ${JOB_EMOJI[pA.job]} ${jobA}  ╳  🟦 **${this.playerBName}** ${JOB_EMOJI[pB.job]} ${jobB}\n\n> ${statusLine}`,
-        );
-      } else {
-        embed.setDescription(
+    if (this.settled) {
+      embed.setDescription(
+        `🏁 Duel settled. Check the public combat log for full details.\n` +
           `🟥 **${this.playerAName}** ${JOB_EMOJI[pA.job]} ${jobA}  ╳  🟦 **${this.playerBName}** ${JOB_EMOJI[pB.job]} ${jobB}`,
-        );
+      );
+    } else {
+      let statusLine: string;
+      if (this.selectionTurnUserId === null) {
+        statusLine = '⚔️ Both choosing — the first lock-in defines the acting player. Opponent action is hidden until resolve.';
+      } else if (viewerLocked) {
+        statusLine = `✅ You locked in: **${this.actionToLabel(viewerPlayer.action)}** · Waiting for opponent lock-in...`;
+      } else if (this.selectionTurnUserId === viewerId) {
+        if (viewerPlayer.wantsSetTrap) {
+          statusLine = '⚙️ Trap prepared — now choose your main action.';
+        } else {
+          statusLine = '🎮 Your turn — choose your action.';
+        }
+      } else {
+        const actingName = this.selectionTurnUserId === this.playerAId ? this.playerAName : this.playerBName;
+        const actingPlayer = this.selectionTurnUserId === this.playerAId ? pA : pB;
+        if (opponentLocked) {
+          statusLine = `⏳ Waiting — ${actingName} locked in: **${this.actionToLabel(actingPlayer.action)}**.`;
+        } else if (actingPlayer.wantsSetTrap) {
+          statusLine = `⏳ Waiting — ${actingName} prepared a trap.`;
+        } else {
+          statusLine = `⏳ Waiting — ${actingName} is choosing...`;
+        }
       }
 
-      embed.addFields(
-        {
-          name: `🟥 ${this.playerAName}`,
-          value: this.renderPlayerStatus(pA),
-          inline: true,
-        },
-        { name: '\u200b', value: '\u200b', inline: true }, // spacer
-        {
-          name: `🟦 ${this.playerBName}`,
-          value: this.renderPlayerStatus(pB),
-          inline: true,
-        },
+      embed.setDescription(
+        `🟥 **${this.playerAName}** ${JOB_EMOJI[pA.job]} ${jobA}  ╳  🟦 **${this.playerBName}** ${JOB_EMOJI[pB.job]} ${jobB}\n\n> ${statusLine}`,
       );
 
-      if (!this.settled) {
-        const timeoutSec = Math.round(ROUND_TIMEOUT / 1000);
-        embed.setFooter({ text: `⏱️ ${timeoutSec}s per round  ·  Actions resolve simultaneously` });
+      // Extra hint: what *you* chose (shown only in your channel)
+      if (viewerLocked) {
+        embed.addFields({
+          name: 'Your selection',
+          value: viewerPlayer.action
+            ? `You locked in **${this.actionToLabel(viewerPlayer.action)}**.`
+            : `You locked in with **no action** for this round.`,
+          inline: false,
+        });
       }
+    }
+
+    embed.addFields(
+      {
+        name: `🟥 ${this.playerAName}`,
+        value: this.renderPlayerStatus(pA, viewerId),
+        inline: true,
+      },
+      { name: '\u200b', value: '\u200b', inline: true }, // spacer
+      {
+        name: `🟦 ${this.playerBName}`,
+        value: this.renderPlayerStatus(pB, viewerId),
+        inline: true,
+      },
+    );
+
+    if (!this.settled) {
+      const timeoutSec = Math.round(ROUND_TIMEOUT / 1000);
+      embed.setFooter({ text: `⏱️ ${timeoutSec}s per round · Sequential lock-in` });
     }
 
     return embed;
   }
 
-  private renderPlayerStatus(player: Player): string {
+  private actionToLabel(action: Action | null): string {
+    if (action === null) return 'No action';
+    switch (action) {
+      case Action.Charge:
+        return 'Charge';
+      case Action.Attack:
+        return 'Attack';
+      case Action.Defend:
+        return 'Defend';
+      case Action.Ultimate:
+        return 'Ultimate';
+      case Action.SetTrap:
+        return 'Set Trap';
+      default:
+        return String(action);
+    }
+  }
+
+  private getOpponentId(userId: string): string {
+    return userId === this.playerAId ? this.playerBId : this.playerAId;
+  }
+
+  private buildPrivateControlComponents(viewerId: string): ActionRowBuilder<ButtonBuilder>[] {
+    if (this.settled) return [];
+    const viewer = this.getPlayer(viewerId);
+    if (!viewer) return [];
+
+    const isTurn = this.selectionTurnUserId === null || this.selectionTurnUserId === viewerId;
+    const canChooseMain = isTurn && !viewer.actionLocked;
+
+    const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+    if (canChooseMain) {
+      rows.push(this.buildActionButtons());
+    }
+
+    const secondaryButtons: ButtonBuilder[] = [];
+    const canSetTrap =
+      isTurn &&
+      !viewer.actionLocked &&
+      viewer.job === Job.Engineer &&
+      viewer.parts > 0 &&
+      !viewer.trapActive &&
+      !viewer.wantsSetTrap;
+
+    if (canSetTrap) {
+      secondaryButtons.push(
+        new ButtonBuilder()
+          .setCustomId('bobozan_trap')
+          .setLabel('⚙️ Set Trap')
+          .setStyle(ButtonStyle.Secondary),
+      );
+    }
+
+    // Allow forfeit at any time (doesn't affect selection turn state).
+    secondaryButtons.push(
+      new ButtonBuilder().setCustomId('bobozan_forfeit').setLabel('🏳️ Forfeit').setStyle(ButtonStyle.Danger),
+    );
+
+    rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(secondaryButtons));
+    return rows;
+  }
+
+  private renderPlayerStatus(player: Player, viewerId: string | null): string {
     const BAR = 8;
     // HP bar: proportional blocks
     const hpFilled = player.maxHp > 0 ? Math.round((player.hp / player.maxHp) * BAR) : 0;
@@ -543,7 +746,15 @@ export class BattleSession {
     ];
 
     if (player.job === Job.Engineer) {
-      lines.push(`⚙️ Parts: **${player.parts}** · Trap: ${player.trapActive ? '✅' : '—'}`);
+      const isSelf = viewerId === null || player.userId === viewerId;
+      if (isSelf) {
+        lines.push(
+          `⚙️ Parts: **${player.parts}** · Trap: ${player.trapActive ? '✅' : player.wantsSetTrap ? '⏳' : '—'}`,
+        );
+      } else {
+        // Hide engineer trap inventory/activation from opponent.
+        lines.push(`⚙️ Trap: —`);
+      }
     }
 
     const activeEffects = player.effects.map(e => `*${e.name}* (${e.duration}r)`).join(', ');
@@ -596,36 +807,33 @@ export class BattleSession {
   }
 
   private async updateBattleEmbed(): Promise<void> {
-    if (!this.battleMessage) return;
+    if (!this.playerA || !this.playerB) return;
+    if (!this.battleMessageA || !this.battleMessageB) return;
 
-    const embed = this.buildBattleEmbed();
-    const components: ActionRowBuilder<ButtonBuilder>[] = [];
+    const embedA = this.buildPrivateControlEmbed(this.playerAId);
+    const compsA = this.buildPrivateControlComponents(this.playerAId);
+    const embedB = this.buildPrivateControlEmbed(this.playerBId);
+    const compsB = this.buildPrivateControlComponents(this.playerBId);
 
-    if (!this.settled) {
-      components.push(this.buildActionButtons());
-      components.push(this.buildSecondaryButtons());
-    }
-
-    await this.battleMessage.edit({ embeds: [embed], components }).catch(() => {});
+    await Promise.all([
+      this.battleMessageA.edit({ embeds: [embedA], components: compsA }).catch(() => {}),
+      this.battleMessageB.edit({ embeds: [embedB], components: compsB }).catch(() => {}),
+    ]);
   }
 
   private async updateTimerEmbed(extraTime: boolean, finished: boolean): Promise<void> {
-    if (!this.channel) return;
     const embed = this.buildTimerEmbed(extraTime, finished);
-
-    if (!this.timerMessage) {
-      this.timerMessage = await this.channel.send({ embeds: [embed] });
-      return;
-    }
-    await this.timerMessage.edit({ embeds: [embed] }).catch(() => {});
+    await Promise.all([
+      this.timerMessageA?.edit({ embeds: [embed] }).catch(() => {}),
+      this.timerMessageB?.edit({ embeds: [embed] }).catch(() => {}),
+    ]);
   }
 
   private async updateLogEmbed(): Promise<void> {
     if (!this.channel) return;
     const embed = this.buildLogEmbed();
-
     if (!this.logMessage) {
-      this.logMessage = await this.channel.send({ embeds: [embed] });
+      this.logMessage = await this.channel.send({ embeds: [embed] }).catch(() => null);
       return;
     }
     await this.logMessage.edit({ embeds: [embed] }).catch(() => {});
@@ -675,6 +883,9 @@ export class BattleSession {
       totalRounds: this.round,
       endedByForfeit: forfeit,
       endedByTimeout: timeout,
+      ...(this.duelCardId ? { duelCardId: this.duelCardId } : {}),
+      ...(this.duelDisplayId ? { duelDisplayId: this.duelDisplayId } : {}),
+      ...(this.duelGuildId ? { guildId: this.duelGuildId } : {}),
     };
   }
 
@@ -690,26 +901,52 @@ export class BattleSession {
     return userId === this.playerAId || userId === this.playerBId;
   }
 
-  /** Ensure the 3-layout messages exist in the temp duel channel. */
-  private async ensureLayoutMessages(channel: TextChannel): Promise<void> {
+  /** Ensure the 3-layout messages exist across public/private channels. */
+  private async ensureLayoutMessages(): Promise<void> {
+    if (!this.channel || !this.privateChannelA || !this.privateChannelB) {
+      throw new Error('BattleSession channels are not attached');
+    }
+
+    // Public: combat log
     if (!this.logMessage) {
-      this.logMessage = await channel.send({
+      const publicButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`bobozan_bug_report:${this.channel.id}`)
+          .setLabel('🐞 Bug report')
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId(`bobozan_admin_end_match:${this.channel.id}`)
+          .setLabel('⏹️ End match (Admin)')
+          .setStyle(ButtonStyle.Danger),
+      );
+      this.logMessage = await this.channel.send({
         embeds: [this.buildLogEmbed()],
+        components: [publicButtons],
       });
     }
 
-    if (!this.timerMessage) {
-      this.timerMessage = await channel.send({
+    // Private A: timeline + control
+    if (!this.timerMessageA) {
+      this.timerMessageA = await this.privateChannelA.send({
         embeds: [this.buildTimerEmbed(false, false)],
       });
     }
+    if (!this.battleMessageA) {
+      const embed = this.buildPrivateControlEmbed(this.playerAId);
+      const components = this.buildPrivateControlComponents(this.playerAId);
+      this.battleMessageA = await this.privateChannelA.send({ embeds: [embed], components });
+    }
 
-    if (!this.battleMessage) {
-      const embed = this.buildBattleEmbed();
-      this.battleMessage = await channel.send({
-        embeds: [embed],
-        components: [this.buildActionButtons(), this.buildSecondaryButtons()],
+    // Private B: timeline + control
+    if (!this.timerMessageB) {
+      this.timerMessageB = await this.privateChannelB.send({
+        embeds: [this.buildTimerEmbed(false, false)],
       });
+    }
+    if (!this.battleMessageB) {
+      const embed = this.buildPrivateControlEmbed(this.playerBId);
+      const components = this.buildPrivateControlComponents(this.playerBId);
+      this.battleMessageB = await this.privateChannelB.send({ embeds: [embed], components });
     }
   }
 
@@ -732,17 +969,22 @@ export class BattleSession {
 
   private async postAdminDeletePrompt(): Promise<void> {
     const ch = this.channel;
-    if (!ch) return;
+    if (!ch || !this.privateChannelA || !this.privateChannelB) return;
+
+    const privateAId = this.privateChannelA.id;
+    const privateBId = this.privateChannelB.id;
+    const publicId = ch.id;
 
     const embed = new EmbedBuilder()
       .setTitle('🧹 Admin cleanup')
-      .setDescription('Admins can delete this duel channel when you are done reviewing the result.')
+      .setDescription('Admins can delete ALL duel channels (public + both private) when you are done reviewing the result.')
       .setColor(0x95a5a6);
 
+    const deleteId = this.duelCardId ?? `${publicId}:${privateAId}:${privateBId}`;
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
-        .setCustomId(`bobozan_delete_channel:${ch.id}`)
-        .setLabel('🗑️ Delete channel')
+        .setCustomId(`bobozan_delete_duel_channels:${deleteId}`)
+        .setLabel('🗑️ Delete duel channels')
         .setStyle(ButtonStyle.Danger),
     );
 

@@ -6,6 +6,7 @@ import { RatingChange } from './LadderService';
 import * as HonorApi from './HonorPointsApiClient';
 import * as BotsLogger from './BotsLoggerClient';
 import { logger } from '../utils/logger';
+import { DuelCard } from '../models/DuelCard';
 
 export interface SettlementResult {
   honorA: HonorBreakdown;
@@ -86,24 +87,37 @@ export async function settle(result: BattleResult): Promise<SettlementResult> {
     pointsChange: honorB.total,
   }).catch(() => {});
 
-  // 5. Match history
-  await MatchHistory.create({
-    playerAId: result.playerAId,
-    playerBId: result.playerBId,
-    playerAName: result.playerAName,
-    playerBName: result.playerBName,
-    playerAJob: result.playerAJob,
-    playerBJob: result.playerBJob,
-    winnerId: result.winnerId,
-    isDraw: result.isDraw,
-    totalRounds: result.totalRounds,
-    playerAHonorEarned: honorA.total,
-    playerBHonorEarned: honorB.total,
-    playerARatingChange: ratingA.delta,
-    playerBRatingChange: ratingB.delta,
-    endedByForfeit: result.endedByForfeit,
-    endedByTimeout: result.endedByTimeout,
-  }).catch(err => logger.error('Failed to save match history:', err));
+  // 5. Match history + link duel card
+  try {
+    const doc = await MatchHistory.create({
+      playerAId: result.playerAId,
+      playerBId: result.playerBId,
+      playerAName: result.playerAName,
+      playerBName: result.playerBName,
+      playerAJob: result.playerAJob,
+      playerBJob: result.playerBJob,
+      winnerId: result.winnerId,
+      isDraw: result.isDraw,
+      totalRounds: result.totalRounds,
+      playerAHonorEarned: honorA.total,
+      playerBHonorEarned: honorB.total,
+      playerARatingChange: ratingA.delta,
+      playerBRatingChange: ratingB.delta,
+      endedByForfeit: result.endedByForfeit,
+      endedByTimeout: result.endedByTimeout,
+      ...(result.duelCardId ? { duelCardId: result.duelCardId } : {}),
+      ...(result.duelDisplayId ? { duelDisplayId: result.duelDisplayId } : {}),
+      ...(result.guildId ? { guildId: result.guildId } : {}),
+    });
+    if (result.duelCardId) {
+      await DuelCard.updateOne(
+        { _id: result.duelCardId },
+        { $set: { status: 'completed', matchHistoryId: doc._id } },
+      ).catch(() => {});
+    }
+  } catch (err) {
+    logger.error('Failed to save match history:', err);
+  }
 
   return { honorA, honorB, ratingA, ratingB, honorApiSuccessA, honorApiSuccessB };
 }

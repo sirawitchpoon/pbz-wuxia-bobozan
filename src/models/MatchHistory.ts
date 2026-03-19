@@ -16,6 +16,9 @@ export interface IMatchHistory extends Document {
   playerBRatingChange: number;
   endedByForfeit: boolean;
   endedByTimeout: boolean;
+  duelCardId?: string;
+  duelDisplayId?: string;
+  guildId?: string;
   createdAt?: Date;
 }
 
@@ -36,6 +39,9 @@ const MatchHistorySchema = new Schema(
     playerBRatingChange: { type: Number, default: 0 },
     endedByForfeit: { type: Boolean, default: false },
     endedByTimeout: { type: Boolean, default: false },
+    duelCardId: { type: String, index: true },
+    duelDisplayId: { type: String, index: true },
+    guildId: { type: String, index: true },
   },
   { timestamps: true, collection: 'bobozan_match_history' },
 );

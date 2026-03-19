@@ -25,3 +25,11 @@ export function getActiveCount(): number {
   // Each session registers 2 keys
   return activeSessions.size / 2;
 }
+
+export function getSessionByPublicChannelId(publicChannelId: string): BattleSession | undefined {
+  const uniqueSessions = new Set(activeSessions.values());
+  for (const s of uniqueSessions) {
+    if (s.getPublicChannelId() === publicChannelId) return s;
+  }
+  return undefined;
+}
