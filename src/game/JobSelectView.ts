@@ -6,6 +6,8 @@ import {
 } from 'discord.js';
 import { Job, JOB_STATS, JOB_EMOJI, JOB_DISPLAY_EN } from '../models/enums';
 
+const DUEL_V3_JOBS: Job[] = [Job.IronMonk, Job.Swordsman, Job.Bladesman];
+
 export function buildJobSelectEmbed(playerAName: string, playerBName: string): EmbedBuilder {
   const embed = new EmbedBuilder()
     .setTitle('⚔️ Choose Your Martial Class')
@@ -17,7 +19,7 @@ export function buildJobSelectEmbed(playerAName: string, playerBName: string): E
     .setColor(0x5865f2)
     .setFooter({ text: '⏱️ 60s to choose · Class cannot be changed after selection' });
 
-  for (const job of Object.values(Job)) {
+  for (const job of DUEL_V3_JOBS) {
     const stats = JOB_STATS[job];
     const display = JOB_DISPLAY_EN[job];
     const emoji = JOB_EMOJI[job];
@@ -29,7 +31,7 @@ export function buildJobSelectEmbed(playerAName: string, playerBName: string): E
     embed.addFields({
       name: `${emoji} ${display.name}`,
       value: [
-        `❤️ \`${hpBar}\` **${stats.hp} HP**  ⚡ Start: **${stats.energy}**  · Ult cost: **${stats.ultCost}**`,
+        `❤️ \`${hpBar}\` **${stats.hp} HP**  ⚡ Start KI: **${stats.energy}**  · Ult cost: **${stats.ultCost}**`,
         `◆ **Passive:** ${display.passiveDesc}`,
         `◆ **Ultimate:** ${display.ultDesc}`,
       ].join('\n'),
@@ -41,13 +43,13 @@ export function buildJobSelectEmbed(playerAName: string, playerBName: string): E
 }
 
 export function buildJobSelectMenu(): ActionRowBuilder<StringSelectMenuBuilder> {
-  const options = Object.values(Job).map(job => {
+  const options = DUEL_V3_JOBS.map(job => {
     const stats = JOB_STATS[job];
     const display = JOB_DISPLAY_EN[job];
     const emoji = JOB_EMOJI[job];
     return new StringSelectMenuOptionBuilder()
-      .setLabel(`${display.name} — HP:${stats.hp} Energy:${stats.energy}`)
-      .setDescription(`Passive + Ultimate (${stats.ultCost} energy)`)
+      .setLabel(`${display.name} — HP:${stats.hp} Killing Intent:${stats.energy}`)
+      .setDescription(`Passive + Ultimate (${stats.ultCost} Killing Intent)`)
       .setValue(job)
       .setEmoji(emoji);
   });

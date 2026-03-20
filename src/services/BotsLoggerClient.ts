@@ -11,12 +11,12 @@ export function isBotsLoggerEnabled(): boolean {
 }
 
 export async function logAction(payload: {
-  botName: string;
+  botId: string;
+  category: string;
   userId: string;
-  username: string;
   action: string;
-  details?: string;
-  pointsChange?: number;
+  username?: string;
+  details?: Record<string, unknown>;
 }): Promise<void> {
   if (!isBotsLoggerEnabled()) return;
 
@@ -27,7 +27,14 @@ export async function logAction(payload: {
         'Content-Type': 'application/json',
         'X-API-Key': loggerApiKey,
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        botId: payload.botId,
+        category: payload.category,
+        action: payload.action,
+        userId: payload.userId,
+        username: payload.username,
+        details: payload.details,
+      }),
     });
   } catch {
     // Logging failures are non-critical — silently ignore

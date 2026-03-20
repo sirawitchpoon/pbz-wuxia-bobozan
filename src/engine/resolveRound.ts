@@ -16,45 +16,198 @@ export interface RoundLog {
 export function resolveRound(p1: Player, p2: Player, roundNumber: number): RoundLog {
   const log: string[] = [];
 
-  // No action (e.g. timeout): treat as did nothing this round
-  if (p1.action === null) {
-    log.push(`⏰ ${p1.displayName} did not choose in time — no action this round.`);
+  const a1 = p1.action;
+  const a2 = p2.action;
+
+  const isIronMonk = (p: Player) => p.job === Job.IronMonk;
+  const isSword = (p: Player) => p.job === Job.Swordsman;
+  const isBlade = (p: Player) => p.job === Job.Bladesman;
+
+  const defendingAgainstAttack = (defender: Player, defenderAction: Action | null): boolean => {
+    // Phantom Flurry self-defend blocks incoming Attacks only.
+    if (defenderAction === Action.Defend) return true;
+    return isSword(defender) && defenderAction === Action.Ultimate; // Phantom Flurry
+  };
+
+  const attackDamage = (attacker: Player): number => {
+    if (isBlade(attacker)) return 1 + attacker.bladeIntent;
+    return 1;
+  };
+
+  const ultimateDamage = (attacker: Player): number => {
+    if (isIronMonk(attacker)) return 2;
+    if (isSword(attacker)) return 3;
+    if (isBlade(attacker)) return 1 + attacker.bladeIntent;
+    return 0;
+  };
+
+  const breakDamage = (_attacker: Player): number => 2;
+
+  // Phase 0: reset-ish log for missing actions
+  if (a1 === null) log.push(`⏰ ${p1.displayName} did not choose — no action this round.`);
+  if (a2 === null) log.push(`⏰ ${p2.displayName} did not choose — no action this round.`);
+
+  // Phase 3: Pre-resolution — Charge gain (+ Blade Intent gain)
+  if (a1 === Action.Charge) {
+    p1.energy += 1;
+    if (isBlade(p1)) p1.bladeIntent = Math.min(3, p1.bladeIntent + 1);
+    log.push(`🔵 ${p1.displayName} Charged (+1 Killing Intent)${isBlade(p1) ? `, +1 Blade Intent (now ${p1.bladeIntent})` : ''}.`);
   }
-  if (p2.action === null) {
-    log.push(`⏰ ${p2.displayName} did not choose in time — no action this round.`);
+  if (a2 === Action.Charge) {
+    p2.energy += 1;
+    if (isBlade(p2)) p2.bladeIntent = Math.min(3, p2.bladeIntent + 1);
+    log.push(`🔵 ${p2.displayName} Charged (+1 Killing Intent)${isBlade(p2) ? `, +1 Blade Intent (now ${p2.bladeIntent})` : ''}.`);
   }
 
-  // ── Level 1: Pre-Check ──────────────────────────────────────────────
-  preCheck(p1, p2, log);
-  preCheck(p2, p1, log);
-
-  // ── Level 2: Buffs / Ultimates ──────────────────────────────────────
-  if (p1.action === Action.Ultimate) executeUltimate(p1, p2, log);
-  if (p2.action === Action.Ultimate) executeUltimate(p2, p1, log);
-
-  // Iron Monk ult: skip all Level 3 damage
-  const skipDamage = p1.ironMonkUlt || p2.ironMonkUlt;
-
-  // ── Level 3: Actions ────────────────────────────────────────────────
-  if (!skipDamage) {
-    resolveActions(p1, p2, log);
-  } else {
-    log.push('🛡️ Iron Monk ult — forced draw this round.');
+  // Phase: Blade Defend reset happens before other effects resolve.
+  if (isBlade(p1) && a1 === Action.Defend) {
+    p1.bladeIntent = 0;
+    log.push(`🗡️ ${p1.displayName} Defended — Blade Intent reset.`);
+  }
+  if (isBlade(p2) && a2 === Action.Defend) {
+    p2.bladeIntent = 0;
+    log.push(`🗡️ ${p2.displayName} Defended — Blade Intent reset.`);
   }
 
-  // ── Level 4: Post-Check ─────────────────────────────────────────────
-  postCheck(p1, p2, log);
-  postCheck(p2, p1, log);
+  // Resolve order: First Strike check (Sword + Keen Eye)
+  const p1FirstStrike = isSword(p1) && p1.keenEyeActive && a1 === Action.Attack;
+  const p2FirstStrike = isSword(p2) && p2.keenEyeActive && a2 === Action.Attack;
 
-  // Crossbow delayed damage
-  crossbowCheck(p1, p2, log);
-  crossbowCheck(p2, p1, log);
+  // After a first-strike Attack resolves, that attacker’s action should not be applied again.
+  let p1ActionSim: Action | null = a1;
+  let p2ActionSim: Action | null = a2;
 
-  // Death check
+  const applyAttack = (attacker: Player, defender: Player, attackerDamage: number, defenderAction: Action | null, label: string): void => {
+    if (defendingAgainstAttack(defender, defenderAction)) {
+      log.push(`🛡️ ${defender.displayName} blocked the attack (${label}).`);
+      defender.statDefendsSuccess++;
+      return;
+    }
+    log.push(`⚔️ ${attacker.displayName} hit for ${attackerDamage} damage (${label}).`);
+    defender.takeDamage(attackerDamage, attacker);
+  };
+
+  // If both have First Strike (should not happen with only one Sword), fall back to p1 then p2.
+  if (p1FirstStrike) {
+    p1.keenEyeActive = false; // consumed by Attack
+    const dmg = 2; // Keen Eye empowered
+    applyAttack(p1, p2, dmg, a2, 'Keen Eye First Strike');
+    if (p2.isDead) {
+      p1.tickEffects();
+      p2.tickEffects();
+      p1.resetRoundState();
+      p2.resetRoundState();
+      return { round: roundNumber, entries: log, p1Dead: p1.isDead, p2Dead: true };
+    }
+    p1ActionSim = null;
+  } else if (p2FirstStrike) {
+    p2.keenEyeActive = false;
+    const dmg = 2;
+    applyAttack(p2, p1, dmg, a1, 'Keen Eye First Strike');
+    if (p1.isDead) {
+      p1.tickEffects();
+      p2.tickEffects();
+      p1.resetRoundState();
+      p2.resetRoundState();
+      return { round: roundNumber, entries: log, p1Dead: true, p2Dead: p2.isDead };
+    }
+    p2ActionSim = null;
+  }
+
+  // Damage from both actions (simultaneous)
+  const dealOutgoing = (source: Player, sourceAction: Action | null, target: Player, targetAction: Action | null): void => {
+    if (!sourceAction || sourceAction === Action.Charge || sourceAction === Action.Defend || sourceAction === Action.SetTrap) return;
+
+    if (sourceAction === Action.Attack) {
+      const dmg = attackDamage(source);
+      applyAttack(source, target, dmg, targetAction, 'Attack');
+      return;
+    }
+
+    if (sourceAction === Action.Break) {
+      const dmg = breakDamage(source);
+      log.push(`💥 ${source.displayName} used Break for ${dmg} damage (ignores Defend).`);
+      target.takeDamage(dmg, source);
+      return;
+    }
+
+    if (sourceAction === Action.Ultimate) {
+      const base = ultimateDamage(source);
+      const halved = targetAction === Action.Defend ? Math.floor(base / 2) : base;
+      log.push(`🟢 ${source.displayName} used Ultimate for ${halved} damage${targetAction === Action.Defend ? ' (halved by Defend)' : ''}.`);
+      target.takeDamage(halved, source);
+      return;
+    }
+  };
+
+  dealOutgoing(p1, p1ActionSim, p2, p2ActionSim);
+  dealOutgoing(p2, p2ActionSim, p1, p1ActionSim);
+
+  // Clash: both Attack
+  if (p1ActionSim === Action.Attack && p2ActionSim === Action.Attack) {
+    p1.energy = Math.max(0, p1.energy - 1);
+    p2.energy = Math.max(0, p2.energy - 1);
+    log.push(`💥 Clash — both lose 1 Killing Intent.`);
+  }
+
+  // Special effects (step 7)
+  // Spirit Drain: Iron Monk Defend vs Attack drains 1 from opponent
+  if (isIronMonk(p1) && a1 === Action.Defend && a2 === Action.Attack) {
+    p2.energy = Math.max(0, p2.energy - 1);
+    log.push(`🛡️ Spirit Drain — ${p2.displayName} loses 1 Killing Intent.`);
+  }
+  if (isIronMonk(p2) && a2 === Action.Defend && a1 === Action.Attack) {
+    p1.energy = Math.max(0, p1.energy - 1);
+    log.push(`🛡️ Spirit Drain — ${p1.displayName} loses 1 Killing Intent.`);
+  }
+
+  // Keen Eye: Sword Defend vs Attack enables First Strike buff
+  if (isSword(p1) && a1 === Action.Defend && a2 === Action.Attack) {
+    p1.keenEyeActive = true;
+    log.push(`👁️ Keen Eye — ${p1.displayName} is primed for the next Attack.`);
+  }
+  if (isSword(p2) && a2 === Action.Defend && a1 === Action.Attack) {
+    p2.keenEyeActive = true;
+    log.push(`👁️ Keen Eye — ${p2.displayName} is primed for the next Attack.`);
+  }
+
+  // Meridian Lock: Iron Monk Ultimate drains opponent Killing Intent to 0
+  if (isIronMonk(p1) && a1 === Action.Ultimate) {
+    p2.energy = 0;
+    log.push(`🛡️ Meridian Lock — ${p2.displayName}'s Killing Intent is set to 0.`);
+  }
+  if (isIronMonk(p2) && a2 === Action.Ultimate) {
+    p1.energy = 0;
+    log.push(`🛡️ Meridian Lock — ${p1.displayName}'s Killing Intent is set to 0.`);
+  }
+
+  // Blade Intent consume/reset
+  if (isBlade(p1) && (a1 === Action.Attack || a1 === Action.Ultimate || a1 === Action.Break)) {
+    // Armor Rend/Attack/Deathblow all consume/reset Blade Intent to 0
+    p1.bladeIntent = 0;
+  }
+  if (isBlade(p2) && (a2 === Action.Attack || a2 === Action.Ultimate || a2 === Action.Break)) {
+    p2.bladeIntent = 0;
+  }
+
+  // Break penalties / future restrictions
+  // Shatter Strike: Iron Monk Break disables Defend next round
+  if (isIronMonk(p1) && a1 === Action.Break) p1.cannotDefendNextRoundRoundsLeft = 2;
+  if (isIronMonk(p2) && a2 === Action.Break) p2.cannotDefendNextRoundRoundsLeft = 2;
+
+  // Quake Palm penalty: Iron Monk Ultimate disables Defend next round (same debuff in V3 table)
+  if (isIronMonk(p1) && a1 === Action.Ultimate) p1.cannotDefendNextRoundRoundsLeft = 2;
+  if (isIronMonk(p2) && a2 === Action.Ultimate) p2.cannotDefendNextRoundRoundsLeft = 2;
+
+  // Concealed Edge: Sword Break disables Charge next round if opponent wasn't Defending
+  if (isSword(p1) && a1 === Action.Break && a2 !== Action.Defend) p1.cannotChargeNextRoundRoundsLeft = 2;
+  if (isSword(p2) && a2 === Action.Break && a1 !== Action.Defend) p2.cannotChargeNextRoundRoundsLeft = 2;
+
+  // HP check
   const p1Dead = p1.isDead;
   const p2Dead = p2.isDead;
 
-  // Tick effects & reset
+  // Tick effects & cleanup state for the next round.
   p1.tickEffects();
   p2.tickEffects();
   p1.resetRoundState();

@@ -46,6 +46,9 @@ export class BattleSession {
 
   private timerMessageA: Message | null = null;
   private timerMessageB: Message | null = null;
+  /** Per-player recap of the last resolved round (above battle controls). */
+  private roundSummaryMessageA: Message | null = null;
+  private roundSummaryMessageB: Message | null = null;
   private battleMessageA: Message | null = null;
   private battleMessageB: Message | null = null;
 
@@ -61,6 +64,9 @@ export class BattleSession {
   private settled: boolean = false;
   private lastRoundLog: RoundLog | null = null;
   private combatLogLines: string[] = [];
+
+  /** Duel started time (ms) — set in `startBattle()`. */
+  private battleStartedAtMs: number | null = null;
 
   /** Persisted duel card (dashboard / delete cleanup) */
   private duelCardId: string | null = null;
@@ -93,9 +99,12 @@ export class BattleSession {
     this.battleMessage = null;
     this.timerMessageA = null;
     this.timerMessageB = null;
+    this.roundSummaryMessageA = null;
+    this.roundSummaryMessageB = null;
     this.battleMessageA = null;
     this.battleMessageB = null;
     this.selectionTurnUserId = null;
+    this.battleStartedAtMs = null;
   }
 
   setDuelCardMeta(cardId: string, displayId: string, guildId: string): void {
@@ -132,7 +141,9 @@ export class BattleSession {
     this.round = 1;
     this.roundIdleExtended = false;
     this.selectionTurnUserId = null;
+    this.lastRoundLog = null;
     this.combatLogLines = [];
+    this.battleStartedAtMs = Date.now();
     this.appendCombatLogLine(`⚔️ Duel started: **${this.playerAName}** vs **${this.playerBName}**`);
     this.appendCombatLogLine(`— Round 1 —`);
 
@@ -147,6 +158,7 @@ export class BattleSession {
       this.updateTimerEmbed(false, false).catch(() => {}),
       this.updateLogEmbed().catch(() => {}),
       this.updateBattleEmbed(),
+      this.updatePrivateRoundSummaries().catch(() => {}),
     ]);
     this.startRoundTimer();
   }
@@ -161,17 +173,6 @@ export class BattleSession {
       return;
     }
 
-    // Sequential gating:
-    // - First valid click defines the acting player for this round.
-    // - The other player is blocked until the acting player locks a main action.
-    if (this.selectionTurnUserId && this.selectionTurnUserId !== userId) {
-      await interaction.reply({
-        content: '⏳ Not your turn to lock in yet — wait for the other player.',
-        ephemeral: true,
-      });
-      return;
-    }
-
     // Validate action
     const validation = this.validateAction(player, action);
     if (validation) {
@@ -179,25 +180,11 @@ export class BattleSession {
       return;
     }
 
-    // After validation succeeds, the first click sets the acting player.
-    if (this.selectionTurnUserId === null) {
-      this.selectionTurnUserId = userId;
-    }
-
     // Acknowledge immediately so Discord doesn't show "interaction failed".
     interaction.deferUpdate().catch(() => {});
 
-    if (action === Action.SetTrap) {
-      player.wantsSetTrap = true;
-      await this.updateBattleEmbed();
-      return;
-    }
-
     player.action = action;
     player.actionLocked = true;
-
-    // Switch selection turn to the opponent (only after a main action is locked).
-    this.selectionTurnUserId = this.getOpponentId(userId);
 
     await this.updateBattleEmbed();
 
@@ -254,6 +241,7 @@ export class BattleSession {
       this.appendCombatLogLine('*(no events)*');
     }
     await this.updateLogEmbed().catch(() => {});
+    await this.updatePrivateRoundSummaries().catch(() => {});
 
     if (roundLog.p1Dead || roundLog.p2Dead) {
       this.settled = true;
@@ -277,7 +265,23 @@ export class BattleSession {
 
   private async settleMatch(result: BattleResult): Promise<void> {
     try {
+      // Ensure match-ended line is included in the combatLog snapshot
+      // that we pass to logger + match history.
+      const isDraw = result.isDraw;
+      const winnerName = isDraw ? null : (result.winnerId === result.playerAId ? this.playerAName : this.playerBName);
+      const loserName = isDraw ? null : (result.winnerId === result.playerAId ? this.playerBName : this.playerAName);
+      if (winnerName) {
+        this.appendCombatLogLine(
+          `🏁 Match ended — **${winnerName}** wins over **${loserName}** (${result.totalRounds} rounds).`,
+        );
+      } else if (isDraw) {
+        this.appendCombatLogLine(`🏁 Match ended — Draw (${result.totalRounds} rounds).`);
+      }
+      // Update the snapshot stored in `result` so downstream logger sees full combat log.
+      result.combatLogLines = [...this.combatLogLines];
+
       const settlement = await SettlementService.settle(result);
+      const matchHistoryId = settlement.matchHistoryId ?? null;
 
       // Build final result embed (shown to both players in their private channels).
       if (this.playerA && this.playerB) {
@@ -358,13 +362,6 @@ export class BattleSession {
         );
 
         embed.setFooter({ text: 'Match complete · Stats updated' });
-        // Also append a match-ended summary into the public combat log.
-        if (winnerName) {
-          this.appendCombatLogLine(`🏁 Match ended — **${winnerName}** wins over **${loserName}** (${result.totalRounds} rounds).`);
-        } else if (isDraw) {
-          this.appendCombatLogLine(`🏁 Match ended — Draw (${result.totalRounds} rounds).`);
-        }
-
         await Promise.all([
           this.battleMessageA?.edit({ embeds: [embed], components: [] }).catch(() => {}),
           this.battleMessageB?.edit({ embeds: [embed], components: [] }).catch(() => {}),
@@ -374,20 +371,55 @@ export class BattleSession {
       }
 
       // Post to public match history channel (channel 3)
-      const historyChannelId = process.env.BOBOZAN_HISTORY_CHANNEL_ID;
+      const historyChannelId = process.env.SHADOW_DUEL_HISTORY_CHANNEL_ID;
       if (historyChannelId && this.playerA && this.playerB) {
         const historyChannel = await this.client.channels.fetch(historyChannelId).catch(() => null);
         if (historyChannel && historyChannel.isTextBased() && 'send' in historyChannel) {
+          const pA = this.playerA;
+          const pB = this.playerB;
+          const jobA = JOB_DISPLAY_EN[pA.job].name;
+          const jobB = JOB_DISPLAY_EN[pB.job].name;
+
           const winnerName = result.isDraw ? null : (result.winnerId === result.playerAId ? this.playerAName : this.playerBName);
-          const summary = result.isDraw
-            ? `**${this.playerAName}** vs **${this.playerBName}** — Draw (${result.totalRounds} rounds)`
-            : `**${winnerName}** defeated **${result.winnerId === result.playerAId ? this.playerBName : this.playerAName}** in ${result.totalRounds} rounds`;
+          const loserName = result.isDraw ? null : (result.winnerId === result.playerAId ? this.playerBName : this.playerAName);
+
+          const reasonEmoji = result.isDraw ? '🟡' : result.endedByForfeit ? '🏳️' : result.endedByTimeout ? '⏳' : '⚔️';
+          const endedReasonText = result.isDraw
+            ? 'Draw'
+            : result.endedByForfeit
+              ? 'Forfeit'
+              : result.endedByTimeout
+                ? 'Timeout'
+                : 'Elimination';
+
           const historyEmbed = new EmbedBuilder()
-            .setTitle('⚔️ Match ended')
-            .setDescription(summary)
-            .setColor(0xd4a574)
+            .setTitle(`⚔️ Shadow Duel ${this.duelDisplayId ? `#${this.duelDisplayId}` : ''}`.trim())
+            .setDescription(
+              [
+                `🟥 **${this.playerAName}** ${JOB_EMOJI[pA.job]} ${jobA}  ╳  🟦 **${this.playerBName}** ${JOB_EMOJI[pB.job]} ${jobB}`,
+                '',
+                result.isDraw
+                  ? `Result: ${reasonEmoji} Draw — ${result.totalRounds} round${result.totalRounds !== 1 ? 's' : ''}`
+                  : `Result: ${reasonEmoji} **${winnerName}** wins — ${result.totalRounds} round${result.totalRounds !== 1 ? 's' : ''} (${endedReasonText})`,
+                result.battleDurationMs != null ? `⏱️ Duration: ~${Math.round(result.battleDurationMs / 1000)}s` : '',
+              ].filter(Boolean).join('\n'),
+            )
+            .setColor(result.isDraw ? 0x95a5a6 : 0xf1c40f)
             .setTimestamp();
-          await (historyChannel as TextChannel).send({ embeds: [historyEmbed] }).catch(() => {});
+
+          const components =
+            matchHistoryId
+              ? [
+                  new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder()
+                      .setCustomId(`bobozan_view_combat_log:${matchHistoryId}`)
+                      .setLabel('📜 View Combat Log')
+                      .setStyle(ButtonStyle.Secondary),
+                  ),
+                ]
+              : [];
+
+          await (historyChannel as TextChannel).send({ embeds: [historyEmbed], components }).catch(() => {});
         }
       }
 
@@ -407,7 +439,9 @@ export class BattleSession {
   // ── Timeout ─────────────────────────────────────────────────────────
 
   private startRoundTimer(): void {
-    // Reset countdown range for this timer window.
+    // V3: 20s action decision. Timeout = automatic loss.
+    // Double timeout (both didn't lock) => 60s grace, then Draw.
+    this.roundIdleExtended = false;
     this.roundTotalMs = ROUND_TIMEOUT;
     this.roundEndsAtMs = Date.now() + this.roundTotalMs;
     this.startRoundTick();
@@ -415,73 +449,37 @@ export class BattleSession {
     this.roundTimer = setTimeout(async () => {
       if (this.settled || !this.playerA || !this.playerB) return;
 
-      // "Idle" means: neither main action locked nor trap prepared.
-      // This prevents premature draw when players only set traps.
-      const bothIdle =
-        !this.playerA.actionLocked &&
-        !this.playerA.wantsSetTrap &&
-        !this.playerB.actionLocked &&
-        !this.playerB.wantsSetTrap;
+      const aLocked = this.playerA.actionLocked;
+      const bLocked = this.playerB.actionLocked;
 
-      if (bothIdle && !this.roundIdleExtended) {
-        // Give both players extra time before declaring draw
+      // Double timeout => grace window then Draw.
+      if (!aLocked && !bLocked) {
         this.roundIdleExtended = true;
         this.roundTotalMs = ROUND_TIMEOUT_BOTH_IDLE_MS;
+        this.clearRoundTimer();
         this.roundEndsAtMs = Date.now() + this.roundTotalMs;
         this.startRoundTick();
         await this.updateTimerEmbed(true, false).catch(() => {});
+
         this.roundTimer = setTimeout(async () => {
           if (this.settled || !this.playerA || !this.playerB) return;
-          const bothNoChoices =
-            !this.playerA.actionLocked &&
-            !this.playerA.wantsSetTrap &&
-            !this.playerB.actionLocked &&
-            !this.playerB.wantsSetTrap;
-
-          if (bothNoChoices) {
-            this.playerA.hp = 0;
-            this.playerB.hp = 0;
-            this.settled = true;
-            const result = this.buildBattleResult(true, false);
-            await this.settleMatch(result);
-            return;
-          }
-
-          // Someone prepared a trap, but neither locked a main action yet:
-          // resolve the round normally with action=null for those who didn't pick.
-          if (!this.playerA.actionLocked) {
-            this.playerA.actionLocked = true;
-            this.playerA.action = null;
-          }
-          if (!this.playerB.actionLocked) {
-            this.playerB.actionLocked = true;
-            this.playerB.action = null;
-          }
-          this.clearRoundTimer();
-          await this.resolveCurrentRound();
+          this.playerA.hp = 0;
+          this.playerB.hp = 0;
+          this.settled = true;
+          const result = this.buildBattleResult(true, false);
+          await this.settleMatch(result);
         }, ROUND_TIMEOUT_BOTH_IDLE_MS);
         return;
       }
 
-      // Only one player idle: treat idle player as "no action" and resolve the round normally
-      if (!bothIdle) {
-        if (!this.playerA.actionLocked) {
-          this.playerA.actionLocked = true;
-          this.playerA.action = null;
-        }
-        if (!this.playerB.actionLocked) {
-          this.playerB.actionLocked = true;
-          this.playerB.action = null;
-        }
-        this.clearRoundTimer();
-        await this.resolveCurrentRound();
-        return;
-      }
-
-      // Both idle after extension: draw
-      this.playerA.hp = 0;
-      this.playerB.hp = 0;
+      // Single timeout => idle player loses immediately.
       this.settled = true;
+      if (!aLocked) {
+        this.playerA.hp = 0;
+      } else if (!bLocked) {
+        this.playerB.hp = 0;
+      }
+      this.clearRoundTimer();
       const result = this.buildBattleResult(true, false);
       await this.settleMatch(result);
     }, ROUND_TIMEOUT);
@@ -502,24 +500,45 @@ export class BattleSession {
   // ── Validation ──────────────────────────────────────────────────────
 
   private validateAction(player: Player, action: Action): string | null {
-    if (action === Action.Attack && player.energy < 1) {
-      if (!(player.job === Job.Bladesman && player.hp <= 2)) {
-        return '❌ Not enough energy. Attack requires 1 energy.';
-      }
+    // V3 debuffs (active in the next round only)
+    if (action === Action.Defend && player.cannotDefendNextRoundRoundsLeft > 0) {
+      return '❌ Defend is disabled for next round.';
+    }
+    if (action === Action.Charge && player.cannotChargeNextRoundRoundsLeft > 0) {
+      return '❌ Charge is disabled for next round.';
     }
 
-    if (action === Action.Ultimate) {
-      const cost = JOB_STATS[player.job].ultCost;
-      if (player.energy < cost) {
-        return `❌ Not enough energy. Ultimate requires ${cost} (you have ${player.energy}).`;
-      }
-      player.energy -= cost;
+    // V3 killing intent costs
+    const isV3Class = player.job === Job.IronMonk || player.job === Job.Swordsman || player.job === Job.Bladesman;
+    if (!isV3Class) {
+      return '❌ This duel uses only the 3 V3 classes.';
     }
+
+    const cost = (() => {
+      switch (action) {
+        case Action.Attack:
+          return 1;
+        case Action.Break:
+          return 2;
+        case Action.Ultimate:
+          return 3;
+        default:
+          return 0;
+      }
+    })();
+
+    if (player.energy < cost) {
+      if (cost > 0) {
+        return `❌ Not enough Killing Intent. ${this.actionToLabel(action)} requires ${cost} (you have ${player.energy}).`;
+      }
+      return null;
+    }
+
+    // Deduct at lock-in time; resolver will treat remaining values as current state.
+    if (cost > 0) player.energy -= cost;
 
     if (action === Action.SetTrap) {
-      if (player.job !== Job.Engineer) return '❌ Only Engineer can set traps.';
-      if (player.parts <= 0) return '❌ No parts left.';
-      if (player.trapActive) return '❌ A trap is already set.';
+      return '❌ Set Trap is not available in V3.';
     }
 
     return null;
@@ -551,9 +570,9 @@ export class BattleSession {
 
     const lines: string[] = [];
     lines.push(`\`${bar}\`  **${remainingSec}s**`);
-    lines.push(`• Per round: **${roundSec}s**`);
-    lines.push(`• Both idle → extra window before draw (**${extraSec}s**)`);
-    if (extraTime) lines.push(`• Extra window active now.`);
+    lines.push(`• Per round: **${roundSec}s** per action decision`);
+    lines.push(`• Double timeout → grace, then Draw (**${extraSec}s** grace)`);
+    if (extraTime) lines.push(`• Grace window active.`);
 
     return new EmbedBuilder().setTitle(title).setDescription(lines.join('\n')).setColor(0x3498db);
   }
@@ -572,6 +591,32 @@ export class BattleSession {
       .setTitle(`📜 Combat log`)
       .setDescription(logText.substring(0, 4096))
       .setColor(0x2c3e50);
+  }
+
+  /** Recap embed for private channels: last resolved round (same lines as public log for that round). */
+  private buildPrivateLastRoundSummaryEmbed(): EmbedBuilder {
+    const embed = new EmbedBuilder().setColor(0x34495e);
+    if (!this.lastRoundLog) {
+      return embed
+        .setTitle('📜 Last round')
+        .setDescription(
+          '_No round resolved yet._ After each resolve, a short recap appears here (same as the public combat log for that round).',
+        );
+    }
+    const lines = this.lastRoundLog.entries;
+    const body = lines.length > 0 ? lines.join('\n') : '*(no events)*';
+    const clipped = body.length > 4096 ? `${body.slice(0, 4050)}\n…` : body;
+    return embed
+      .setTitle(`📜 Round ${this.lastRoundLog.round} — recap`)
+      .setDescription(clipped);
+  }
+
+  private async updatePrivateRoundSummaries(): Promise<void> {
+    const embed = this.buildPrivateLastRoundSummaryEmbed();
+    await Promise.all([
+      this.roundSummaryMessageA?.edit({ embeds: [embed] }).catch(() => {}),
+      this.roundSummaryMessageB?.edit({ embeds: [embed] }).catch(() => {}),
+    ]);
   }
 
   private buildPrivateControlEmbed(viewerId: string): EmbedBuilder {
@@ -607,26 +652,12 @@ export class BattleSession {
       );
     } else {
       let statusLine: string;
-      if (this.selectionTurnUserId === null) {
-        statusLine = '⚔️ Both choosing — the first lock-in defines the acting player. Opponent action is hidden until resolve.';
+      if (!viewerLocked && !opponentLocked) {
+        statusLine = '⚔️ Both choosing — your opponent’s action is hidden.';
       } else if (viewerLocked) {
-        statusLine = `✅ You locked in: **${this.actionToLabel(viewerPlayer.action)}** · Waiting for opponent lock-in...`;
-      } else if (this.selectionTurnUserId === viewerId) {
-        if (viewerPlayer.wantsSetTrap) {
-          statusLine = '⚙️ Trap prepared — now choose your main action.';
-        } else {
-          statusLine = '🎮 Your turn — choose your action.';
-        }
+        statusLine = `✅ You locked in: **${this.actionToLabel(viewerPlayer.action)}** · Waiting for opponent...`;
       } else {
-        const actingName = this.selectionTurnUserId === this.playerAId ? this.playerAName : this.playerBName;
-        const actingPlayer = this.selectionTurnUserId === this.playerAId ? pA : pB;
-        if (opponentLocked) {
-          statusLine = `⏳ Waiting — ${actingName} locked in: **${this.actionToLabel(actingPlayer.action)}**.`;
-        } else if (actingPlayer.wantsSetTrap) {
-          statusLine = `⏳ Waiting — ${actingName} prepared a trap.`;
-        } else {
-          statusLine = `⏳ Waiting — ${actingName} is choosing...`;
-        }
+        statusLine = '⏳ Waiting — opponent locked in. Your opponent’s action is hidden until resolve.';
       }
 
       embed.setDescription(
@@ -661,7 +692,7 @@ export class BattleSession {
 
     if (!this.settled) {
       const timeoutSec = Math.round(ROUND_TIMEOUT / 1000);
-      embed.setFooter({ text: `⏱️ ${timeoutSec}s per round · Sequential lock-in` });
+      embed.setFooter({ text: `⏱️ ${timeoutSec}s per round · Simultaneous lock-in` });
     }
 
     return embed;
@@ -676,6 +707,8 @@ export class BattleSession {
         return 'Attack';
       case Action.Defend:
         return 'Defend';
+      case Action.Break:
+        return 'Break';
       case Action.Ultimate:
         return 'Ultimate';
       case Action.SetTrap:
@@ -694,36 +727,18 @@ export class BattleSession {
     const viewer = this.getPlayer(viewerId);
     if (!viewer) return [];
 
-    const isTurn = this.selectionTurnUserId === null || this.selectionTurnUserId === viewerId;
-    const canChooseMain = isTurn && !viewer.actionLocked;
+    // V3: simultaneous action selection. Each player can lock in independently.
+    const canChooseMain = !viewer.actionLocked;
 
     const rows: ActionRowBuilder<ButtonBuilder>[] = [];
     if (canChooseMain) {
       rows.push(this.buildActionButtons());
     }
 
-    const secondaryButtons: ButtonBuilder[] = [];
-    const canSetTrap =
-      isTurn &&
-      !viewer.actionLocked &&
-      viewer.job === Job.Engineer &&
-      viewer.parts > 0 &&
-      !viewer.trapActive &&
-      !viewer.wantsSetTrap;
-
-    if (canSetTrap) {
-      secondaryButtons.push(
-        new ButtonBuilder()
-          .setCustomId('bobozan_trap')
-          .setLabel('⚙️ Set Trap')
-          .setStyle(ButtonStyle.Secondary),
-      );
-    }
-
-    // Allow forfeit at any time (doesn't affect selection turn state).
-    secondaryButtons.push(
+    // Allow forfeit at any time (doesn't affect selection state).
+    const secondaryButtons: ButtonBuilder[] = [
       new ButtonBuilder().setCustomId('bobozan_forfeit').setLabel('🏳️ Forfeit').setStyle(ButtonStyle.Danger),
-    );
+    ];
 
     rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(secondaryButtons));
     return rows;
@@ -742,8 +757,23 @@ export class BattleSession {
 
     const lines = [
       `${hpIcon} \`${hpBar}\` **${player.hp}/${player.maxHp}**`,
-      `⚡ \`${energyBar}\` **${player.energy}**`,
+      `⚡ \`${energyBar}\` **${player.energy}** Killing Intent`,
     ];
+
+    if (player.job === Job.Bladesman) {
+      lines.push(`🗡️ Blade Intent: **${player.bladeIntent}/3**`);
+    }
+
+    if (player.job === Job.Swordsman) {
+      lines.push(`👁️ Keen Eye: ${player.keenEyeActive ? '✅ Active' : '—'}`);
+    }
+
+    if (player.cannotDefendNextRoundRoundsLeft > 0) {
+      lines.push('⛔ Cannot Defend next round');
+    }
+    if (player.cannotChargeNextRoundRoundsLeft > 0) {
+      lines.push('⛔ Cannot Charge next round');
+    }
 
     if (player.job === Job.Engineer) {
       const isSelf = viewerId === null || player.userId === viewerId;
@@ -776,6 +806,10 @@ export class BattleSession {
       new ButtonBuilder()
         .setCustomId('bobozan_defend')
         .setLabel('⚪ Defend')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('bobozan_break')
+        .setLabel('🟠 Break')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId('bobozan_ultimate')
@@ -844,6 +878,9 @@ export class BattleSession {
   private buildBattleResult(timeout: boolean, forfeit: boolean): BattleResult {
     const pA = this.playerA!;
     const pB = this.playerB!;
+    const endedAtMs = Date.now();
+    const startedAtMs = this.battleStartedAtMs ?? undefined;
+    const battleDurationMs = startedAtMs != null ? Math.max(0, endedAtMs - startedAtMs) : undefined;
 
     const bothDead = pA.isDead && pB.isDead;
     const isDraw = bothDead;
@@ -886,6 +923,10 @@ export class BattleSession {
       ...(this.duelCardId ? { duelCardId: this.duelCardId } : {}),
       ...(this.duelDisplayId ? { duelDisplayId: this.duelDisplayId } : {}),
       ...(this.duelGuildId ? { guildId: this.duelGuildId } : {}),
+      combatLogLines: [...this.combatLogLines],
+      battleStartedAtMs: startedAtMs,
+      battleEndedAtMs: endedAtMs,
+      battleDurationMs,
     };
   }
 
@@ -911,10 +952,6 @@ export class BattleSession {
     if (!this.logMessage) {
       const publicButtons = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
-          .setCustomId(`bobozan_bug_report:${this.channel.id}`)
-          .setLabel('🐞 Bug report')
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
           .setCustomId(`bobozan_admin_end_match:${this.channel.id}`)
           .setLabel('⏹️ End match (Admin)')
           .setStyle(ButtonStyle.Danger),
@@ -925,10 +962,15 @@ export class BattleSession {
       });
     }
 
-    // Private A: timeline + control
+    // Private A: timeline + last-round recap + control
     if (!this.timerMessageA) {
       this.timerMessageA = await this.privateChannelA.send({
         embeds: [this.buildTimerEmbed(false, false)],
+      });
+    }
+    if (!this.roundSummaryMessageA) {
+      this.roundSummaryMessageA = await this.privateChannelA.send({
+        embeds: [this.buildPrivateLastRoundSummaryEmbed()],
       });
     }
     if (!this.battleMessageA) {
@@ -937,10 +979,15 @@ export class BattleSession {
       this.battleMessageA = await this.privateChannelA.send({ embeds: [embed], components });
     }
 
-    // Private B: timeline + control
+    // Private B: timeline + recap + control
     if (!this.timerMessageB) {
       this.timerMessageB = await this.privateChannelB.send({
         embeds: [this.buildTimerEmbed(false, false)],
+      });
+    }
+    if (!this.roundSummaryMessageB) {
+      this.roundSummaryMessageB = await this.privateChannelB.send({
+        embeds: [this.buildPrivateLastRoundSummaryEmbed()],
       });
     }
     if (!this.battleMessageB) {

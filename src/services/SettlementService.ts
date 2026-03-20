@@ -15,6 +15,7 @@ export interface SettlementResult {
   ratingB: RatingChange;
   honorApiSuccessA: boolean;
   honorApiSuccessB: boolean;
+  matchHistoryId?: string | null;
 }
 
 /**
@@ -42,10 +43,11 @@ export async function settle(result: BattleResult): Promise<SettlementResult> {
   const [ratingA, ratingB] = await LadderService.calculateRatingChanges(result, profileA, profileB);
 
   // 3. Honor Points API (centralized, prevents race conditions)
-  // Set BOBOZAN_SKIP_HONOR_POINTS=true in .env to skip sending points during testing
+  // Set SHADOW_DUEL_SKIP_HONOR_POINTS=true in .env to skip sending points during testing
   let honorApiSuccessA = false;
   let honorApiSuccessB = false;
-  const skipHonorPoints = process.env.BOBOZAN_SKIP_HONOR_POINTS === 'true' || process.env.BOBOZAN_SKIP_HONOR_POINTS === '1';
+  const skipHonorPoints =
+    process.env.SHADOW_DUEL_SKIP_HONOR_POINTS === 'true' || process.env.SHADOW_DUEL_SKIP_HONOR_POINTS === '1';
 
   if (!skipHonorPoints && HonorApi.isHonorPointsApiEnabled()) {
     try {
@@ -64,30 +66,69 @@ export async function settle(result: BattleResult): Promise<SettlementResult> {
       logger.error(`Honor API call failed for ${result.playerBId}:`, err);
     }
   } else if (skipHonorPoints) {
-    logger.info('BOBOZAN_SKIP_HONOR_POINTS is set — honor not sent to central system (test mode)');
+    logger.info('SHADOW_DUEL_SKIP_HONOR_POINTS is set — honor not sent to central system (test mode)');
   } else {
     logger.warn('Honor Points API not configured — points not added to central system');
   }
 
   // 4. Action logging (non-blocking, fire-and-forget)
+  const endedReason = result.isDraw
+    ? 'draw'
+    : result.endedByForfeit
+      ? 'forfeit'
+      : result.endedByTimeout
+        ? 'timeout'
+        : 'elimination';
+
+  const details = {
+    duelCardId: result.duelCardId ?? null,
+    duelDisplayId: result.duelDisplayId ?? null,
+    guildId: result.guildId ?? null,
+    startedAtMs: result.battleStartedAtMs ?? null,
+    endedAtMs: result.battleEndedAtMs ?? null,
+    durationMs: result.battleDurationMs ?? null,
+    totalRounds: result.totalRounds,
+    endedReason,
+    outcome: {
+      winnerId: result.winnerId,
+      loserId: result.loserId,
+      isDraw: result.isDraw,
+    },
+    players: {
+      playerA: { id: result.playerAId, name: result.playerAName, job: result.playerAJob },
+      playerB: { id: result.playerBId, name: result.playerBName, job: result.playerBJob },
+    },
+    honors: {
+      honorA: honorA.total,
+      honorB: honorB.total,
+    },
+    ratingDeltas: {
+      playerA: ratingA.delta,
+      playerB: ratingB.delta,
+    },
+    combatLogLines: result.combatLogLines ?? [],
+  };
+
   BotsLogger.logAction({
-    botName: 'wuxia-bobozan',
+    botId: 'wuxia-bobozan',
+    category: 'shadow_duel',
+    action: 'match_end',
     userId: result.playerAId,
     username: result.playerAName,
-    action: 'bobozan_match',
-    details: `${result.playerAJob} vs ${result.playerBJob}, ${result.totalRounds} rounds`,
-    pointsChange: honorA.total,
+    details,
   }).catch(() => {});
+
   BotsLogger.logAction({
-    botName: 'wuxia-bobozan',
+    botId: 'wuxia-bobozan',
+    category: 'shadow_duel',
+    action: 'match_end',
     userId: result.playerBId,
     username: result.playerBName,
-    action: 'bobozan_match',
-    details: `${result.playerBJob} vs ${result.playerAJob}, ${result.totalRounds} rounds`,
-    pointsChange: honorB.total,
+    details,
   }).catch(() => {});
 
   // 5. Match history + link duel card
+  let matchHistoryId: string | null = null;
   try {
     const doc = await MatchHistory.create({
       playerAId: result.playerAId,
@@ -108,7 +149,9 @@ export async function settle(result: BattleResult): Promise<SettlementResult> {
       ...(result.duelCardId ? { duelCardId: result.duelCardId } : {}),
       ...(result.duelDisplayId ? { duelDisplayId: result.duelDisplayId } : {}),
       ...(result.guildId ? { guildId: result.guildId } : {}),
+      combatLogLines: result.combatLogLines ?? [],
     });
+    matchHistoryId = String(doc._id);
     if (result.duelCardId) {
       await DuelCard.updateOne(
         { _id: result.duelCardId },
@@ -119,5 +162,5 @@ export async function settle(result: BattleResult): Promise<SettlementResult> {
     logger.error('Failed to save match history:', err);
   }
 
-  return { honorA, honorB, ratingA, ratingB, honorApiSuccessA, honorApiSuccessB };
+  return { honorA, honorB, ratingA, ratingB, honorApiSuccessA, honorApiSuccessB, matchHistoryId };
 }

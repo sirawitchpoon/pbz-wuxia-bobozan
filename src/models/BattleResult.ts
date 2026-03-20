@@ -31,4 +31,14 @@ export interface BattleResult {
   /** Human-readable duel id e.g. 001 */
   duelDisplayId?: string;
   guildId?: string;
+
+  /** Captured combat log lines so we can show history after temp channels are deleted. */
+  combatLogLines?: string[];
+
+  /** Duel started time (ms since epoch) — set when `BattleSession.startBattle()` begins. */
+  battleStartedAtMs?: number;
+  /** Duel ended time (ms since epoch) — set at settlement. */
+  battleEndedAtMs?: number;
+  /** Duration ms = ended - started (when both timestamps exist). */
+  battleDurationMs?: number;
 }

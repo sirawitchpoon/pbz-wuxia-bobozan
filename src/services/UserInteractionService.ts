@@ -11,7 +11,9 @@ import * as LadderService from './LadderService';
 import { getRankForRating } from '../models/LadderProfile';
 import { RANK_TIERS } from '../models/LadderProfile';
 import { setLeaderboardMessageId } from './ChannelMessageStore';
-import { buildGuidebookEmbed, buildGuidebookNavComponents, GUIDEBOOK_JOB_ORDER } from '../game/GuidebookView';
+import {
+  buildGuidebookCategoryNavComponents,
+} from '../game/GuidebookView';
 
 /**
  * Manages persistent messages:
@@ -22,6 +24,7 @@ import { buildGuidebookEmbed, buildGuidebookNavComponents, GUIDEBOOK_JOB_ORDER }
  * - Channel 7: Honor (static)
  * - Channel 8: My Stats button
  * - Channel 9: Guidebook (class details) with Prev/Next buttons
+ * - Channel 9: Guidebook (class details) with per-class buttons (ephemeral on click)
  */
 export class UserInteractionService {
   private client: Client | null = null;
@@ -46,15 +49,13 @@ export class UserInteractionService {
     if (!this.client) return;
     await this.setupHub();
     await this.setupLeaderboardChannel();
-    await this.setupRanksChannel();
-    await this.setupRulesChannel();
-    await this.setupHonorChannel();
-    await this.setupStatsChannel();
     await this.setupGuidebookChannel();
+    await this.setupHistoryChannel();
+    await this.setupShadowDuelAdminChannel();
   }
 
   private async setupHub(): Promise<void> {
-    const channelId = process.env.BOBOZAN_HUB_CHANNEL_ID;
+    const channelId = process.env.SHADOW_DUEL_HUB_CHANNEL;
     if (!channelId || !this.client) return;
 
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
@@ -62,7 +63,10 @@ export class UserInteractionService {
 
     const messages = await channel.messages.fetch({ limit: 10 });
     const existing = messages.find(
-      m => m.author.id === this.client!.user?.id && m.embeds.length > 0 && m.embeds[0].title?.includes('Arena'),
+      m =>
+        m.author.id === this.client!.user?.id &&
+        m.embeds.length > 0 &&
+        (m.embeds[0].title?.includes('Hub') || m.embeds[0].title?.includes('Arena')),
     );
 
     const embed = this.buildHubEmbed();
@@ -77,14 +81,13 @@ export class UserInteractionService {
 
   private buildHubEmbed(): EmbedBuilder {
     return new EmbedBuilder()
-      .setTitle('⚔️ Shadow Duel — Arena')
+      .setTitle('⚔️ Shadow Duel — Hub')
       .setDescription(
         'Turn-based psychological duel game.\nInspired by Chinese martial arts — real-time 1v1.\n\n' +
         '**How to start a duel:**\n' +
         '🟠 **Open Challenge** — Post a challenge; anyone can accept.\n' +
         '🔴 **Target Challenge** — Choose a specific opponent.\n\n' +
-        '**Info:**\n' +
-        '📊 My Stats | 🏆 Leaderboard | 🎖️ Honor | ⚔️ Ranks | 📖 Rules',
+        'Use the Guidebook in-game to access class, combat, reward, rank, and rules details.',
       )
       .setColor(0xd4a574)
       .setFooter({ text: 'Shadow Duel · Turn-based 1v1 duel' });
@@ -101,12 +104,16 @@ export class UserInteractionService {
           .setCustomId('bobozan_target_challenge')
           .setLabel('🎯 Target Challenge')
           .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId('bobozan_my_profile')
+          .setLabel('📊 My Stats')
+          .setStyle(ButtonStyle.Secondary),
       ),
     ];
   }
 
   private async setupLeaderboardChannel(): Promise<void> {
-    const channelId = process.env.BOBOZAN_LEADERBOARD_CHANNEL_ID;
+    const channelId = process.env.SHADOW_DUEL_LEADERBOARD_CHANNEL_ID;
     if (!channelId || !this.client) return;
 
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
@@ -146,7 +153,7 @@ export class UserInteractionService {
 
   /** Call after a match ends to refresh the leaderboard message in channel 4. */
   static async updateLeaderboardInChannel(client: Client): Promise<void> {
-    const channelId = process.env.BOBOZAN_LEADERBOARD_CHANNEL_ID;
+    const channelId = process.env.SHADOW_DUEL_LEADERBOARD_CHANNEL_ID;
     const messageId = (await import('./ChannelMessageStore')).getLeaderboardMessageId();
     if (!channelId || !messageId) return;
 
@@ -203,24 +210,8 @@ export class UserInteractionService {
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
     if (!channel || !(channel instanceof TextChannel)) return;
 
-    const roundSec = process.env.ROUND_TIMEOUT_SECONDS || '20';
-    const bothIdleSec = process.env.ROUND_TIMEOUT_BOTH_IDLE_SECONDS || '60';
-
-    const embed = new EmbedBuilder()
-      .setTitle('⚔️ Shadow Duel — Rules')
-      .setColor(0xd4a574)
-      .setDescription('1v1 turn-based duel inspired by Chinese martial arts.')
-      .addFields(
-        { name: '🎮 Basics', value: 'Two players choose actions each round. Your opponent cannot see your choice. HP is class-based (3–7). HP 0 = loss; both 0 = draw.' },
-        { name: '🔵 Charge', value: '+1 energy. Engineer: 50% chance +1 part.' },
-        { name: '🔴 Attack', value: 'Costs 1 energy, 1 damage. Blocked if opponent Defends. Both attack = clash: 1 damage each, energy → 0.' },
-        { name: '⚪ Defend', value: 'Blocks attack. May trigger class passives.' },
-        { name: '🟢 Ultimate', value: 'Class-specific, costs energy.' },
-        {
-          name: '⏱️ Time',
-          value: `${roundSec} seconds per round to choose. No choice = loss. If **both** players don\'t choose in time, you get ${bothIdleSec} extra seconds before the round is declared a draw.`,
-        },
-      );
+    const { buildShadowDuelRulesEmbed } = await import('../game/buildShadowDuelRulesEmbed');
+    const embed = buildShadowDuelRulesEmbed();
 
     const messages = await channel.messages.fetch({ limit: 3 });
     const existing = messages.find(m => m.author.id === this.client!.user?.id);
@@ -281,21 +272,26 @@ export class UserInteractionService {
   }
 
   private async setupGuidebookChannel(): Promise<void> {
-    const channelId = process.env.BOBOZAN_GUIDEBOOK_CHANNEL_ID;
+    const channelId = process.env.SHADOW_DUEL_GUIDEBOOK_CHANNEL_ID;
     if (!channelId || !this.client) return;
 
     const channel = await this.client.channels.fetch(channelId).catch(() => null);
     if (!channel || !(channel instanceof TextChannel)) return;
 
-    const firstJob = GUIDEBOOK_JOB_ORDER[0] ?? null;
-    if (!firstJob) return;
+    const embed = new EmbedBuilder()
+      .setTitle('📖 Guidebook')
+      .setDescription(
+        'Select a category below. Class details, Combat details, Rewards, Ranks, and Rules will be shown as ephemeral messages (only you can see them).',
+      )
+      .setColor(0xd4a574)
+      .setFooter({ text: 'V3: Iron Monk / The Sword / The Blade · Break included' });
 
-    const embed = buildGuidebookEmbed(firstJob);
-    const components = buildGuidebookNavComponents(firstJob);
+    // Persistent landing page: categories only.
+    const components = buildGuidebookCategoryNavComponents();
 
     const messages = await channel.messages.fetch({ limit: 5 });
     const existing = messages.find(
-      m => m.author.id === this.client!.user?.id && m.embeds.length > 0 && m.embeds[0].title?.startsWith('📖 Guidebook'),
+      m => m.author.id === this.client!.user?.id && m.embeds.length > 0 && m.embeds[0].title?.includes('Guidebook'),
     );
 
     if (existing) {
@@ -304,5 +300,76 @@ export class UserInteractionService {
     }
 
     await channel.send({ embeds: [embed], components }).catch(() => {});
+  }
+
+  private async setupHistoryChannel(): Promise<void> {
+    const channelId = process.env.SHADOW_DUEL_HISTORY_CHANNEL_ID;
+    if (!channelId || !this.client) return;
+
+    const channel = await this.client.channels.fetch(channelId).catch(() => null);
+    if (!channel || !(channel instanceof TextChannel)) return;
+
+    const embed = new EmbedBuilder()
+      .setTitle('🗂️ Combat Log History')
+      .setDescription('Each Match end will include a `📜 View Combat Log` button. Click to view it as an ephemeral message (only you can see it) — the full data is preserved even if temp duel channels are deleted.')
+      .setColor(0x2c3e50);
+
+    const messages = await channel.messages.fetch({ limit: 5 });
+    const existing = messages.find(m => m.author.id === this.client!.user?.id && m.embeds.length > 0 && m.embeds[0].title?.includes('Combat Log History'));
+    if (existing) {
+      await existing.edit({ embeds: [embed], components: [] }).catch(() => {});
+      return;
+    }
+
+    await channel.send({ embeds: [embed], components: [] }).catch(() => {});
+  }
+
+  private async setupShadowDuelAdminChannel(): Promise<void> {
+    const channelId = process.env.SHADOW_DUEL_ADMIN_CHANNEL_ID;
+    if (!channelId || !this.client) return;
+
+    const channel = await this.client.channels.fetch(channelId).catch(() => null);
+    if (!channel || !(channel instanceof TextChannel)) return;
+
+    const embed = new EmbedBuilder()
+      .setTitle('🛡️ Shadow Duel Admin')
+      .setDescription(
+        'Admins can export Shadow Duel history, reset ALL Shadow Duel data (history + leaderboard), and cancel stuck challenges.\n\n' +
+          'Buttons below are interactive (only admins/with Manage Channels will work).'
+      )
+      .setColor(0x95a5a6);
+
+    const row1 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId('bobozan_shadowduel_admin_export_history')
+        .setLabel('📤 Export all history')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId('bobozan_shadowduel_admin_reset_player')
+        .setLabel('🧼 Reset ALL Shadow Duel data')
+        .setStyle(ButtonStyle.Secondary),
+    );
+
+    const row2 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId('bobozan_shadowduel_admin_cancel_duel')
+        .setLabel('⛔ Cancel duel (by ID)')
+        .setStyle(ButtonStyle.Danger),
+    );
+
+    const messages = await channel.messages.fetch({ limit: 5 });
+    const existing = messages.find(
+      (m) =>
+        m.author.id === this.client!.user?.id &&
+        m.embeds.length > 0 &&
+        m.embeds[0].title?.includes('Shadow Duel Admin'),
+    );
+
+    if (existing) {
+      await existing.edit({ embeds: [embed], components: [row1, row2] }).catch(() => {});
+      return;
+    }
+
+    await channel.send({ embeds: [embed], components: [row1, row2] }).catch(() => {});
   }
 }

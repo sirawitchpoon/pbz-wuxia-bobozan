@@ -8,12 +8,30 @@ export class Player {
 
   public hp: number;
   public readonly maxHp: number;
+  /**
+   * V3: Killing Intent (resource).
+   * We reuse the existing `energy` field as the same numeric pool.
+   */
   public energy: number;
 
   /** Swordsman: consecutive Charge count for Sword Intent */
   public consecutiveCharges: number = 0;
   /** Set when Sword Intent triggers — consumed by resolver */
   public hasFirstStrike: boolean = false;
+
+  /** V3: The Blade only (0–3). */
+  public bladeIntent: number = 0;
+
+  /** V3: The Sword only. Next Attack gets First Strike + 2 dmg. */
+  public keenEyeActive: boolean = false;
+
+  /**
+   * V3 debuffs:
+   * - set to 2 when applied, then decremented at end of each round.
+   * - Active in the next round only.
+   */
+  public cannotDefendNextRoundRoundsLeft: number = 0;
+  public cannotChargeNextRoundRoundsLeft: number = 0;
 
   /** Engineer: parts inventory for trap setting */
   public parts: number = 0;
@@ -84,6 +102,9 @@ export class Player {
     this.swordsmanUlt = false;
     this.piercing = false;
     this.assassinUlt = false;
+
+    if (this.cannotDefendNextRoundRoundsLeft > 0) this.cannotDefendNextRoundRoundsLeft--;
+    if (this.cannotChargeNextRoundRoundsLeft > 0) this.cannotChargeNextRoundRoundsLeft--;
   }
 
   get isDead(): boolean {

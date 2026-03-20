@@ -3,7 +3,7 @@
  * Use after reset-competition-data.ts to clear the visible match history in Discord.
  *
  * Run from project root: npx ts-node scripts/purge-match-history-channel.ts
- * Requires: DISCORD_TOKEN, BOBOZAN_HISTORY_CHANNEL_ID in .env
+ * Requires: DISCORD_TOKEN, SHADOW_DUEL_HISTORY_CHANNEL_ID in .env
  */
 
 import path from 'path';
@@ -14,10 +14,10 @@ import { Client, GatewayIntentBits, TextChannel } from 'discord.js';
 
 async function main() {
   const token = process.env.DISCORD_TOKEN;
-  const channelId = process.env.BOBOZAN_HISTORY_CHANNEL_ID;
+  const channelId = process.env.SHADOW_DUEL_HISTORY_CHANNEL_ID;
 
   if (!token || !channelId) {
-    console.error('❌ Set DISCORD_TOKEN and BOBOZAN_HISTORY_CHANNEL_ID in .env');
+    console.error('❌ Set DISCORD_TOKEN and SHADOW_DUEL_HISTORY_CHANNEL_ID in .env');
     process.exit(1);
   }
 

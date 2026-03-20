@@ -10,8 +10,10 @@ export enum Action {
   Charge = 'charge',
   Attack = 'attack',
   Defend = 'defend',
+  /** V3: Break (cost 2 Killing Intent, deals 2 dmg ignoring Defend). */
+  Break = 'break',
   Ultimate = 'ultimate',
-  /** Engineer-only: set trap (does NOT consume the round action) */
+  /** Legacy: Engineer-only trap (unused in V3). */
   SetTrap = 'set_trap',
 }
 
@@ -27,18 +29,18 @@ export interface JobStats {
 
 export const JOB_STATS: Record<Job, JobStats> = {
   [Job.Swordsman]: {
-    hp: 5,
+    hp: 5, // V3 The Sword
     energy: 0,
-    ultCost: 2,
+    ultCost: 3,
     ultName: '万剑归宗',
     passiveName: '剑意',
     passiveDesc: '连续聚气2次后，下一次出招获得先手优先权',
     ultDesc: '本回合同时执行攻击与防御',
   },
   [Job.Bladesman]: {
-    hp: 6,
+    hp: 6, // V3 The Blade
     energy: 0,
-    ultCost: 1,
+    ultCost: 3,
     ultName: '弃守狂刀',
     passiveName: '嗜血',
     passiveDesc: 'HP≤2时，出招不耗气，但无法防御',
@@ -54,9 +56,9 @@ export const JOB_STATS: Record<Job, JobStats> = {
     ultDesc: '对手防御→禁招1回合；对手未防御→必中1伤害',
   },
   [Job.IronMonk]: {
-    hp: 7,
+    hp: 6, // V3 Iron Monk
     energy: 0,
-    ultCost: 1,
+    ultCost: 3,
     ultName: '盘根不动',
     passiveName: '震劲',
     passiveDesc: '成功防御时消耗对手1气',
@@ -84,24 +86,30 @@ export const JOB_EMOJI: Record<Job, string> = {
 /** English display names and descriptions for global servers */
 export const JOB_DISPLAY_EN: Record<Job, { name: string; passiveDesc: string; ultDesc: string }> = {
   [Job.Swordsman]: {
-    name: 'Swordsman',
-    passiveDesc: 'After 2 consecutive Charges, next Attack gains First Strike priority.',
-    ultDesc: 'This round: execute both Attack AND Defend.',
+    name: 'The Sword',
+    passiveDesc:
+      'Keen Eye: After a successful Defend vs Attack, your next Attack gains First Strike and deals 2 damage instead of 1.',
+    ultDesc:
+      'Phantom Flurry: Deal 3 damage and gain self-Defend this round (blocks incoming Attacks only). If halved by Defend: 1 damage.',
   },
   [Job.Bladesman]: {
-    name: 'Bladesman',
-    passiveDesc: 'When HP ≤ 2, Attack costs 0 energy but Defend is disabled.',
-    ultDesc: 'Take 1 HP self-damage, gain 2 energy; this round\'s attack pierces defense.',
+    name: 'The Blade',
+    passiveDesc:
+      'Blade Intent (0–3): Gain +1 stack on Charge (plus Killing Intent). Defend or Armor Rend resets stacks to 0. Attack/Deathblow consumes all stacks to boost damage.',
+    ultDesc:
+      'Deathblow: Consumes all Blade Intent and deals (1 + stacks) damage. If halved by Defend, rounded down.',
   },
   [Job.Assassin]: {
     name: 'Assassin',
-    passiveDesc: 'Each successful Defend grants +1 bonus energy.',
+    passiveDesc: 'Each successful Defend grants +1 Killing Intent.',
     ultDesc: 'If opponent defends → they are banned from attacking next round. If not → guaranteed 1 damage.',
   },
   [Job.IronMonk]: {
     name: 'Iron Monk',
-    passiveDesc: 'Each successful Defend drains 1 energy from the opponent.',
-    ultDesc: 'Force a draw this round. Next round, opponent can only Charge or Defend.',
+    passiveDesc:
+      'Spirit Drain: When Iron Monk successfully Defends an Attack, drain 1 Killing Intent from the opponent.',
+    ultDesc:
+      'Meridian Lock: Deal 2 damage (halved by Defend → 1). After damage, set opponent Killing Intent to 0.',
   },
   [Job.Engineer]: {
     name: 'Engineer',

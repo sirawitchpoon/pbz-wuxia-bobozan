@@ -9,8 +9,11 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  AttachmentBuilder,
   UserSelectMenuBuilder,
   UserSelectMenuInteraction,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
   ChannelType,
   PermissionFlagsBits,
   TextInputBuilder,
@@ -21,12 +24,20 @@ import { Action, Job } from '../models/enums';
 import * as SessionManager from '../game/SessionManager';
 import { BattleSession } from '../game/BattleSession';
 import { buildJobSelectEmbed, buildJobSelectMenu } from '../game/JobSelectView';
-import { buildGuidebookEmbed, buildGuidebookNavComponents, GUIDEBOOK_JOB_ORDER } from '../game/GuidebookView';
+import {
+  buildGuidebookEmbed,
+  buildGuidebookNavComponents,
+  buildGuidebookCombatNavComponents,
+  buildGuidebookRulesNavComponents,
+  GUIDEBOOK_JOB_ORDER,
+} from '../game/GuidebookView';
 import { LadderProfile, getRankForRating, RANK_TIERS } from '../models/LadderProfile';
 import { MatchHistory } from '../models/MatchHistory';
 import { DuelCard } from '../models/DuelCard';
 import { nextDuelDisplayId } from '../models/DuelCounter';
 import * as LadderService from '../services/LadderService';
+import * as BotsLogger from '../services/BotsLoggerClient';
+import { UserInteractionService } from '../services/UserInteractionService';
 import { logger } from '../utils/logger';
 import { connectDB, isDBConnected } from '../utils/connectDB';
 import { Types } from 'mongoose';
@@ -108,8 +119,17 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
   if (id === 'bobozan_rank_tiers') return handleRanksButton(interaction);
   if (id === 'bobozan_rules') return handleRulesButton(interaction);
 
-  // Guidebook (class details) navigation (single persistent embed message)
+  // Guidebook: Category layer (persistent)
+  if (id.startsWith('bobozan_guidebook_category:')) return handleGuidebookCategory(interaction);
+
+  // Guidebook: Class details
   if (id.startsWith('bobozan_guidebook_show:')) return handleGuidebookShow(interaction);
+
+  // Guidebook: Combat action details
+  if (id.startsWith('bobozan_guidebook_combat:')) return handleGuidebookCombatSection(interaction);
+
+  // Guidebook: Rules details
+  if (id.startsWith('bobozan_guidebook_rules:')) return handleGuidebookRulesSection(interaction);
 
   // Challenge accept/decline
   if (id.startsWith('bobozan_accept_')) return handleAcceptChallenge(interaction);
@@ -122,7 +142,7 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
   // Battle action buttons
   if (id.startsWith('bobozan_charge') || id.startsWith('bobozan_attack') ||
       id.startsWith('bobozan_defend') || id.startsWith('bobozan_ultimate') ||
-      id.startsWith('bobozan_trap')) {
+      id.startsWith('bobozan_break')) {
     return handleBattleAction(interaction);
   }
 
@@ -131,6 +151,17 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
 
   // Admin cleanup: delete duel channels
   if (id.startsWith('bobozan_delete_duel_channels:')) return handleDeleteTempChannel(interaction);
+
+  // Combat log history
+  if (id === 'bobozan_history_recent') return handleHistoryRecentButton(interaction);
+
+  // Per-match combat log view
+  if (id.startsWith('bobozan_view_combat_log:')) return handleViewCombatLogButton(interaction);
+
+  // Shadow Duel Admin controls
+  if (id === 'bobozan_shadowduel_admin_export_history') return handleShadowDuelAdminExportHistoryButton(interaction);
+  if (id === 'bobozan_shadowduel_admin_reset_player') return handleShadowDuelAdminResetPlayerButton(interaction);
+  if (id === 'bobozan_shadowduel_admin_cancel_duel') return handleShadowDuelAdminCancelDuelButton(interaction);
 }
 
 // ── Open Challenge ────────────────────────────────────────────────────
@@ -158,7 +189,7 @@ async function handleOpenChallenge(interaction: ButtonInteraction): Promise<void
     return;
   }
 
-  const challengeChannelId = process.env.BOBOZAN_CHALLENGE_CHANNEL_ID;
+  const challengeChannelId = process.env.SHADOW_DUEL_CHALLENGE_CHANNEL_ID;
   const channel = challengeChannelId
     ? await interaction.client.channels.fetch(challengeChannelId).catch(() => null)
     : interaction.channel;
@@ -178,6 +209,24 @@ async function handleOpenChallenge(interaction: ButtonInteraction): Promise<void
     challengerId: user.id,
     status: 'open',
   });
+
+  // Log challenge creation (open)
+  BotsLogger.logAction({
+    botId: 'wuxia-bobozan',
+    category: 'shadow_duel',
+    action: 'challenge_created_open',
+    userId: user.id,
+    username: user.displayName,
+    details: {
+      duelCardId: String(card._id),
+      duelDisplayId: displayId,
+      challengeType: 'open',
+      challengerId: user.id,
+      createdAtMs: Date.now(),
+      expiresInMs: CHALLENGE_EXPIRE_MS,
+      guildId,
+    },
+  }).catch(() => {});
 
   const embed = new EmbedBuilder()
     .setTitle(`⚔️ Open Challenge · #${displayId}`)
@@ -303,7 +352,7 @@ async function handleUserSelect(interaction: UserSelectMenuInteraction): Promise
     return;
   }
 
-  const challengeChannelId = process.env.BOBOZAN_CHALLENGE_CHANNEL_ID;
+  const challengeChannelId = process.env.SHADOW_DUEL_CHALLENGE_CHANNEL_ID;
   const targetChannel = challengeChannelId
     ? await interaction.client.channels.fetch(challengeChannelId).catch(() => null)
     : interaction.channel;
@@ -324,6 +373,27 @@ async function handleUserSelect(interaction: UserSelectMenuInteraction): Promise
     targetUserId: opponent.id,
     status: 'open',
   });
+
+  // Log challenge creation (targeted)
+  BotsLogger.logAction({
+    botId: 'wuxia-bobozan',
+    category: 'shadow_duel',
+    action: 'challenge_created_targeted',
+    userId: challengerId,
+    username: interaction.user.displayName,
+    details: {
+      duelCardId: String(card._id),
+      duelDisplayId: displayId,
+      challengeType: 'targeted',
+      challengerId,
+      challengerName: interaction.user.displayName,
+      targetUserId: opponent.id,
+      targetName: opponent.displayName,
+      createdAtMs: Date.now(),
+      expiresInMs: CHALLENGE_EXPIRE_MS,
+      guildId,
+    },
+  }).catch(() => {});
 
   const embed = new EmbedBuilder()
     .setTitle(`🎯 Target Challenge · #${displayId}`)
@@ -461,6 +531,9 @@ async function handleAcceptChallenge(interaction: ButtonInteraction): Promise<vo
   );
   SessionManager.registerSession(session);
 
+  // Prevent "Unknown interaction" when channel/category creation takes > 3s.
+  await interaction.deferUpdate().catch(() => {});
+
   const adminRoleId = process.env.BOBOZAN_ADMIN_ROLE_ID;
   const prefix = (process.env.BOBOZAN_DUEL_CHANNEL_PREFIX || 'sd').toLowerCase().replace(/[^a-z0-9]/g, '') || 'sd';
   const slugA = duelUsernameSlug(challenger.displayName, challengerId);
@@ -583,24 +656,31 @@ async function handleAcceptChallenge(interaction: ButtonInteraction): Promise<vo
   session.attachChannels(publicChannel, privateAChannel, privateBChannel);
   session.setDuelCardMeta(String(updated._id), displayId, guild.id);
 
-  await interaction.update({
-    embeds: [
-      new EmbedBuilder()
-        .setTitle(`⚔️ Challenge Accepted · #${displayId}`)
-        .setDescription(
-          `🟥 **${challenger.displayName}**  ╳  🟦 **${acceptor.displayName}**\n\n` +
-          `> Duel **#${displayId}** — Combat log: <#${publicChannel.id}>`,
-        )
-        .setColor(0x2ecc71)
-        .setFooter({ text: `Shadow Duel #${displayId}` }),
-    ],
-    components: [],
-  });
+  // Use message.edit (not interaction.update) to avoid interaction token issues.
+  await interaction.message
+    .edit({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle(`⚔️ Challenge Accepted · #${displayId}`)
+          .setDescription(
+            `🟥 **${challenger.displayName}**  ╳  🟦 **${acceptor.displayName}**\n\n` +
+            `> Duel **#${displayId}** — Combat log: <#${publicChannel.id}>`,
+          )
+          .setColor(0x2ecc71)
+          .setFooter({ text: `Shadow Duel #${displayId}` }),
+      ],
+      components: [],
+    })
+    .catch(() => {});
+
+  const forumId = process.env.SHADOW_DUEL_FORUMS_CHANNEL_ID;
+  const forumMention = forumId ? `<#${forumId}>` : 'Shadow Duel Bug & Suggestion Forums';
 
   await publicChannel.send({
     content:
       `${challenger} ${acceptor}\n\n` +
-      `**Shadow Duel #${displayId}** — This channel is the **Combat Log** (round summary, bug report, and admin tools).\n\n` +
+      `**Shadow Duel #${displayId}** — This channel is the **Combat Log** (round summary and admin tools).\n\n` +
+      `For any issues, please create a post directly in the **Shadow Duel Bug & Suggestion Forums**: ${forumMention}\n\n` +
       `🎮 **Choose your class and actions only in your private room:**\n` +
       `• **${challenger.displayName}** → <#${privateAChannel.id}>\n` +
       `• **${acceptor.displayName}** → <#${privateBChannel.id}>\n\n` +
@@ -696,20 +776,16 @@ async function handleBugReportButton(interaction: ButtonInteraction): Promise<vo
     return;
   }
 
-  const modal = new ModalBuilder()
-    .setCustomId(`bobozan_bug_modal:${publicChannelId}`)
-    .setTitle('🐞 Shadow Duel Bug Report')
-    .addComponents(
-      new ActionRowBuilder<TextInputBuilder>().addComponents(
-        new TextInputBuilder()
-          .setCustomId('bug_description')
-          .setLabel('Describe the bug (what happened, expected vs actual)')
-          .setStyle(TextInputStyle.Paragraph)
-          .setRequired(true),
-      ),
-    );
+  const forumId = process.env.SHADOW_DUEL_FORUMS_CHANNEL_ID;
+  const forumMention = forumId ? `<#${forumId}>` : 'Shadow Duel Bug & Suggestion Forums';
 
-  await interaction.showModal(modal);
+  await interaction.reply({
+    content:
+      `🐞 Bug reporting is now handled via the forums (no bot button needed).\n` +
+      `Create a post here: ${forumMention}\n` +
+      `For this duel: <#${publicChannelId}>`,
+    ephemeral: true,
+  });
 }
 
 async function handleAdminEndMatchButton(interaction: ButtonInteraction): Promise<void> {
@@ -737,6 +813,8 @@ async function handleAdminEndMatchButton(interaction: ButtonInteraction): Promis
 }
 
 async function handleModalSubmit(interaction: ModalSubmitInteraction): Promise<void> {
+  if (interaction.customId === 'bobozan_admin_reset_player_modal') return handleShadowDuelAdminResetPlayerModal(interaction);
+  if (interaction.customId === 'bobozan_admin_cancel_duel_modal') return handleShadowDuelAdminCancelDuelModal(interaction);
   if (!interaction.customId.startsWith('bobozan_bug_modal:')) return;
 
   const publicChannelId = interaction.customId.split(':')[1];
@@ -752,46 +830,15 @@ async function handleModalSubmit(interaction: ModalSubmitInteraction): Promise<v
   }
 
   const forumId = process.env.SHADOW_DUEL_FORUMS_CHANNEL_ID;
-  if (!forumId) {
-    await interaction.reply({ content: '❌ Forums channel is not configured in env.', ephemeral: true });
-    return;
-  }
+  const forumMention = forumId ? `<#${forumId}>` : 'Shadow Duel Bug & Suggestion Forums';
 
-  if (!interaction.guild) {
-    await interaction.reply({ content: '❌ Guild not found.', ephemeral: true });
-    return;
-  }
-
-  const forumChannel = await interaction.guild.channels.fetch(forumId).catch(() => null);
-  if (!forumChannel) {
-    await interaction.reply({ content: '❌ Forums channel not found.', ephemeral: true });
-    return;
-  }
-
-  try {
-    const session = SessionManager.getSessionByPublicChannelId(publicChannelId);
-    const reporter = interaction.user;
-
-    const content =
-      `**Bug report**\n\n` +
-      `Reporter: ${reporter} (${reporter.username})\n` +
-      `Duel public channel: <#${publicChannelId}>\n` +
-      (session ? `Participants: duel is active.\n` : `Participants: session not found (maybe ended).\n`) +
-      `\n---\n${bugText}`;
-
-    const createdThread = await (forumChannel as any).threads.create({
-      name: `ShadowDuel Bug — ${reporter.username}`,
-      autoArchiveDuration: 1440,
-      message: { content },
-    });
-
-    await interaction.reply({
-      content: `✅ Bug submitted. Thread created: ${createdThread?.url ?? createdThread?.name ?? ''}`,
-      ephemeral: true,
-    });
-  } catch (err) {
-    await interaction.reply({ content: '❌ Failed to create forums thread. Check bot permissions.', ephemeral: true });
-  }
+  await interaction.reply({
+    content:
+      `🐞 Thanks! Bug reporting no longer uses the bot to create threads.\n` +
+      `Please create a post directly in: ${forumMention}\n\n` +
+      `Suggested content (copy/paste):\n${bugText}`,
+    ephemeral: true,
+  });
 }
 
 // ── Battle Actions ────────────────────────────────────────────────────
@@ -812,8 +859,8 @@ async function handleBattleAction(interaction: ButtonInteraction): Promise<void>
     bobozan_charge: Action.Charge,
     bobozan_attack: Action.Attack,
     bobozan_defend: Action.Defend,
+    bobozan_break: Action.Break,
     bobozan_ultimate: Action.Ultimate,
-    bobozan_trap: Action.SetTrap,
   };
 
   const action = actionMap[interaction.customId];
@@ -988,22 +1035,17 @@ async function handleHonorButton(interaction: ButtonInteraction): Promise<void> 
   const total = profile?.honorTotal ?? 0;
 
   const embed = new EmbedBuilder()
-    .setTitle('🏅 Shadow Duel — Honor Points')
+    .setTitle('🎁 Reward — Honor Points')
     .setColor(0xd4a574)
-    .setDescription(`**Your total Honor: ${total}**\n\nHonor is added to the central Honor Points system after each match.`)
+    .setDescription(`Earned Honor Points are credited after each match.\n\nYour current Honor: **${total}**`)
     .addFields({
-      name: '📋 Scoring',
+      name: 'Scoring (per match)',
       value: [
-        '**Base:** +10 (participation)',
-        '**Win:** +30 | **Draw:** +15 | **Loss:** +5',
-        '**Damage:** +4 per hit',
-        '**Ultimate:** +5 per use',
-        '**Defend:** +3 per successful block',
-        '**Perfect win:** +20 (full HP)',
-        '**Comeback:** +15 (1 HP left)',
-        '**Fast win:** +10 (≤3 rounds)',
-        '**Long battle:** +8 (>10 rounds, both)',
-        '**Forfeit:** -10 | **Timeout:** -5',
+        '**Participation:** +10',
+        '**Result:** Win +30 | Draw +15 | Loss +5',
+        '**Performance:** Damage +4/hit | Ultimate +5/use | Defend +3/block',
+        '**Bonus:** Perfect win +20 | Comeback +15 | Fast win +10 | Long battle +8',
+        '**Penalty:** Forfeit -10 | Timeout -5',
       ].join('\n'),
       inline: false,
     });
@@ -1024,45 +1066,8 @@ async function handleRanksButton(interaction: ButtonInteraction): Promise<void> 
 }
 
 async function handleRulesButton(interaction: ButtonInteraction): Promise<void> {
-  const roundSec = process.env.ROUND_TIMEOUT_SECONDS || '20';
-  const bothIdleSec = process.env.ROUND_TIMEOUT_BOTH_IDLE_SECONDS || '60';
-
-  const embed = new EmbedBuilder()
-    .setTitle('⚔️ Shadow Duel — Rules')
-    .setColor(0xd4a574)
-    .setDescription('1v1 turn-based duel inspired by Chinese martial arts.')
-    .addFields(
-      {
-        name: '🎮 Basics',
-        value: [
-          '• Two players choose actions at the same time each round.',
-          '• Your opponent **cannot see** your choice.',
-          '• HP is class-based (3–7). HP 0 = loss. Both 0 = draw.',
-        ].join('\n'),
-      },
-      {
-        name: '🔵 Charge',
-        value: '+1 energy. Engineer: 50% chance +1 part.',
-      },
-      {
-        name: '🔴 Attack',
-        value: 'Costs 1 energy, 1 damage. Blocked if opponent Defends. Both attack = clash: 1 damage each, energy → 0.',
-      },
-      {
-        name: '⚪ Defend',
-        value: 'Blocks attack. May trigger class passives.',
-      },
-      {
-        name: '🟢 Ultimate',
-        value: 'Class-specific, costs energy. See class descriptions.',
-      },
-      {
-        name: '⏱️ Time',
-        value: `${roundSec}s per round. No choice = loss. If **both** don't choose in time, ${bothIdleSec}s extra before draw.`,
-      },
-    );
-
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  const { buildShadowDuelRulesEmbed } = await import('../game/buildShadowDuelRulesEmbed');
+  await interaction.reply({ embeds: [buildShadowDuelRulesEmbed()], ephemeral: true });
 }
 
 async function handleGuidebookShow(interaction: ButtonInteraction): Promise<void> {
@@ -1080,60 +1085,431 @@ async function handleGuidebookShow(interaction: ButtonInteraction): Promise<void
   }
 
   const embed = buildGuidebookEmbed(job);
-  const components = buildGuidebookNavComponents(job);
-
-  // Edit the same persistent embed message. Defer first to avoid interaction timeout.
+  // Show per-user content only, so multiple users clicking won't fight over the same embed.
   await interaction.deferUpdate().catch(() => {});
-  await interaction.message.edit({ embeds: [embed], components }).catch(() => {});
+  await interaction.followUp({ embeds: [embed], ephemeral: true }).catch(() => {});
+}
+
+async function handleGuidebookCategory(interaction: ButtonInteraction): Promise<void> {
+  const raw = interaction.customId.split(':')[1];
+  const category = raw as 'classes' | 'combat' | 'reward' | 'ranks' | 'rules' | undefined;
+  if (!category) {
+    await interaction.reply({ content: '❌ Invalid guidebook category.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  if (category === 'classes') {
+    const prompt = new EmbedBuilder()
+      .setTitle('📚 Classes')
+      .setDescription('Pick your class to view its full details (ephemeral).')
+      .setColor(0xd4a574);
+    const components = buildGuidebookNavComponents();
+    await interaction.reply({ embeds: [prompt], components, ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  if (category === 'combat') {
+    const prompt = new EmbedBuilder()
+      .setTitle('⚔️ Combat')
+      .setDescription('Choose a combat action to see its rules (ephemeral).')
+      .setColor(0xd4a574);
+    const components = buildGuidebookCombatNavComponents();
+    await interaction.reply({ embeds: [prompt], components, ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  if (category === 'rules') {
+    const prompt = new EmbedBuilder()
+      .setTitle('📜 Rules')
+      .setDescription('Choose a rules section (ephemeral).')
+      .setColor(0xd4a574);
+    const components = buildGuidebookRulesNavComponents();
+    await interaction.reply({ embeds: [prompt], components, ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  if (category === 'reward') {
+    // Reward category uses the same scoring info as the existing Honor Points embed.
+    return handleHonorButton(interaction);
+  }
+
+  if (category === 'ranks') {
+    return handleRanksButton(interaction);
+  }
+
+  await interaction.reply({ content: '❌ Invalid guidebook category.', ephemeral: true }).catch(() => {});
+}
+
+async function handleGuidebookCombatSection(interaction: ButtonInteraction): Promise<void> {
+  const action = interaction.customId.split(':')[1] as any;
+  const { buildShadowDuelRulesSectionEmbed } = await import('../game/buildShadowDuelRulesEmbed');
+  const embed = buildShadowDuelRulesSectionEmbed(action);
+  await interaction.reply({ embeds: [embed], ephemeral: true }).catch(() => {});
+}
+
+async function handleGuidebookRulesSection(interaction: ButtonInteraction): Promise<void> {
+  const section = interaction.customId.split(':')[1] as string | undefined;
+  if (!section) {
+    await interaction.reply({ content: '❌ Invalid rules section.', ephemeral: true });
+    return;
+  }
+
+  const { buildShadowDuelRulesSectionEmbed } = await import('../game/buildShadowDuelRulesEmbed');
+  const embed = buildShadowDuelRulesSectionEmbed(section as any);
+  await interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+async function handleHistoryRecentButton(interaction: ButtonInteraction): Promise<void> {
+  const matches = await MatchHistory.find({
+    $or: [{ playerAId: interaction.user.id }, { playerBId: interaction.user.id }],
+  })
+    .sort({ createdAt: -1 })
+    .limit(5)
+    .lean();
+
+  if (!matches || matches.length === 0) {
+    await interaction.reply({ content: 'No combat logs found yet. Start a duel first.', ephemeral: true });
+    return;
+  }
+
+  const { getJobDisplayNameEn } = await import('../models/enums');
+
+  const options = matches.map(m => {
+    const isA = m.playerAId === interaction.user.id;
+    const myJob = isA ? m.playerAJob : m.playerBJob;
+    const oppJob = isA ? m.playerBJob : m.playerAJob;
+    const oppName = isA ? m.playerBName : m.playerAName;
+    const result = m.isDraw ? 'D' : m.winnerId === interaction.user.id ? 'W' : 'L';
+    const icon = m.isDraw ? '🟡' : m.winnerId === interaction.user.id ? '🟢' : '🔴';
+    const duelId = m.duelDisplayId ? `#${m.duelDisplayId}` : '';
+
+    return new StringSelectMenuOptionBuilder()
+      .setLabel(`${icon} ${result} ${duelId} vs ${oppName}`.slice(0, 95))
+      .setDescription(`${getJobDisplayNameEn(myJob)} vs ${getJobDisplayNameEn(oppJob)}`.slice(0, 95))
+      .setValue(String((m as any)._id));
+  });
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('bobozan_history_pick')
+    .setPlaceholder('Pick a match to view combat log...')
+    .addOptions(options);
+
+  const row = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+
+  const embed = new EmbedBuilder()
+    .setTitle('🎞️ My Combat Logs')
+    .setColor(0x2c3e50)
+    .setDescription('Select a match to view the combat log (ephemeral).');
+
+  await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
+}
+
+async function handleHistoryPick(interaction: StringSelectMenuInteraction): Promise<void> {
+  const matchId = interaction.values[0];
+  if (!matchId) {
+    await interaction.reply({ content: '❌ Invalid match id.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  await interaction.deferUpdate().catch(() => {});
+
+  const match = await MatchHistory.findById(matchId).lean();
+  if (!match) {
+    await interaction.followUp({ content: '❌ Match not found.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const duelId = match.duelDisplayId ? `#${match.duelDisplayId}` : '';
+  const lines = (match.combatLogLines ?? []) as string[];
+  const raw = lines.join('\n') || '*(no events stored)*';
+  const clipped = raw.slice(0, 3900);
+  const wrapped = `\`\`\`\n${clipped}\n\`\`\``;
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📜 Combat Log ${duelId}`.trim())
+    .setColor(0x2c3e50)
+    .setDescription(lines.length ? wrapped : '*(no events stored)*')
+    .setFooter({ text: `${match.playerAName} vs ${match.playerBName}` });
+
+  await interaction.followUp({ embeds: [embed], ephemeral: true }).catch(() => {});
+}
+
+async function handleViewCombatLogButton(interaction: ButtonInteraction): Promise<void> {
+  const matchId = interaction.customId.split(':')[1];
+  if (!matchId || !Types.ObjectId.isValid(matchId)) {
+    await interaction.reply({ content: '❌ Invalid combat log target.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  await interaction.deferUpdate().catch(() => {});
+
+  const match = await MatchHistory.findById(matchId).lean();
+  if (!match) {
+    await interaction.followUp({ content: '❌ Combat log not found (match data may have been reset).', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  // Privacy: only the participants can view combat log history.
+  if (interaction.user.id !== match.playerAId && interaction.user.id !== match.playerBId) {
+    await interaction.followUp({ content: '❌ This combat log is only available for duel participants.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const duelId = match.duelDisplayId ? `#${match.duelDisplayId}` : '';
+  const lines = (match.combatLogLines ?? []) as string[];
+  const raw = lines.join('\n') || '*(no events stored)*';
+  const clipped = raw.slice(0, 3900);
+  const wrapped = `\`\`\`\n${clipped}\n\`\`\``;
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📜 Combat Log ${duelId}`.trim())
+    .setColor(0x2c3e50)
+    .setDescription(lines.length ? wrapped : '*(no events stored)*')
+    .setFooter({ text: `${match.playerAName} vs ${match.playerBName}` });
+
+  await interaction.followUp({ embeds: [embed], ephemeral: true }).catch(() => {});
+}
+
+// ── Shadow Duel Admin Controls ───────────────────────────────────────
+
+async function handleShadowDuelAdminExportHistoryButton(interaction: ButtonInteraction): Promise<void> {
+  if (!isAdmin(interaction)) {
+    await interaction.reply({ content: '❌ Admins only.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  await interaction.deferUpdate().catch(() => {});
+
+  await connectDB();
+  if (!isDBConnected()) {
+    await interaction.followUp({ content: '❌ Database unavailable.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const docs = await MatchHistory.find({}).sort({ createdAt: -1 }).limit(2000).lean();
+  const exported = {
+    exportedAtMs: Date.now(),
+    count: docs.length,
+    items: docs,
+  };
+  const json = JSON.stringify(exported, null, 2);
+  const attachment = new AttachmentBuilder(Buffer.from(json, 'utf-8'), { name: 'shadow-duel-history-export.json' });
+
+  await interaction.followUp({
+    content: `📤 Exported Shadow Duel history (last ${docs.length} matches).`,
+    files: [attachment],
+    ephemeral: true,
+  }).catch(() => {});
+}
+
+async function handleShadowDuelAdminResetPlayerButton(interaction: ButtonInteraction): Promise<void> {
+  if (!isAdmin(interaction)) {
+    await interaction.reply({ content: '❌ Admins only.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const modal = new ModalBuilder()
+    .setCustomId('bobozan_admin_reset_player_modal')
+    .setTitle('🧼 Reset ALL Shadow Duel data')
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('reset_confirm')
+          .setLabel(`Type "RESET" to confirm`)
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true),
+      ),
+    );
+
+  await interaction.showModal(modal);
+}
+
+async function handleShadowDuelAdminCancelDuelButton(interaction: ButtonInteraction): Promise<void> {
+  if (!isAdmin(interaction)) {
+    await interaction.reply({ content: '❌ Admins only.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const modal = new ModalBuilder()
+    .setCustomId('bobozan_admin_cancel_duel_modal')
+    .setTitle('⛔ Cancel Shadow Duel')
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder()
+          .setCustomId('duel_card_id_or_display')
+          .setLabel('Paste duel card ID (_id, best) or duel display id (e.g. 001)')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true),
+      ),
+    );
+
+  await interaction.showModal(modal);
+}
+
+async function handleShadowDuelAdminResetPlayerModal(interaction: ModalSubmitInteraction): Promise<void> {
+  if (!isAdmin(interaction as any)) {
+    await interaction.reply({ content: '❌ Admins only.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const confirmText = interaction.fields.getTextInputValue('reset_confirm')?.trim().toUpperCase();
+  if (!confirmText || confirmText !== 'RESET') {
+    await interaction.reply({ content: '❌ Type "RESET" exactly to confirm.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  await connectDB();
+  if (!isDBConnected()) {
+    await interaction.reply({ content: '❌ Database unavailable.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const deletedMatchCount = await MatchHistory.countDocuments({}).catch(() => 0);
+  const deletedProfileCount = await LadderProfile.countDocuments({}).catch(() => 0);
+
+  await MatchHistory.deleteMany({}).catch(() => {});
+  // Unlink any duel cards pointing to match history (prevents broken combat log buttons).
+  await DuelCard.updateMany({}, { $unset: { matchHistoryId: 1 } }).catch(() => {});
+
+  await LadderProfile.deleteMany({}).catch(() => {});
+
+  // Best-effort: refresh leaderboard message immediately.
+  await UserInteractionService.updateLeaderboardInChannel(interaction.client as any).catch(() => {});
+
+  await interaction.reply({
+    content: `✅ Reset complete: cleared ${deletedMatchCount} Shadow Duel matches and ${deletedProfileCount} leaderboard profiles.`,
+    ephemeral: true,
+  }).catch(() => {});
+}
+
+async function handleShadowDuelAdminCancelDuelModal(interaction: ModalSubmitInteraction): Promise<void> {
+  if (!isAdmin(interaction as any)) {
+    await interaction.reply({ content: '❌ Admins only.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const raw = interaction.fields.getTextInputValue('duel_card_id_or_display')?.trim();
+  if (!raw) {
+    await interaction.reply({ content: '❌ Invalid input.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  await connectDB();
+  if (!isDBConnected()) {
+    await interaction.reply({ content: '❌ Database unavailable.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  const guildId = interaction.guild?.id;
+  if (!guildId) {
+    await interaction.reply({ content: '❌ Guild not found.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  // Accept either DuelCard _id (24 hex) or duel display id (e.g. 001).
+  const duelCard =
+    isDuelCardObjectId(raw) ? await DuelCard.findById(raw).lean() : await DuelCard.findOne({ guildId, displayId: raw }).lean();
+
+  if (!duelCard) {
+    await interaction.reply({ content: '❌ Duel card not found.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  // Cancel status + best-effort cleanup.
+  await DuelCard.updateOne(
+    { _id: duelCard._id },
+    { $set: { status: 'cancelled' }, $unset: { acceptorId: 1 } },
+  ).catch(() => {});
+
+  // If there are temp channels, delete them.
+  if (duelCard.publicChannelId && duelCard.privateChannelAId && duelCard.privateChannelBId && duelCard.categoryId) {
+    await deleteDuelChannelShell(interaction.guild!, {
+      categoryId: duelCard.categoryId ?? null,
+      publicId: duelCard.publicChannelId ?? null,
+      privateAId: duelCard.privateChannelAId ?? null,
+      privateBId: duelCard.privateChannelBId ?? null,
+    }).catch(() => {});
+  }
+
+  // If it's still an open challenge, update its challenge message if we can.
+  if (duelCard.challengeChannelId && duelCard.challengeMessageId) {
+    const ch = await interaction.guild?.channels.fetch(duelCard.challengeChannelId).catch(() => null);
+    if (ch && ch instanceof TextChannel) {
+      const msg = await ch.messages.fetch(duelCard.challengeMessageId).catch(() => null);
+      if (msg) {
+        await msg.edit({
+          embeds: [
+            new EmbedBuilder()
+              .setTitle('⚔️ Challenge cancelled (Admin)')
+              .setDescription(`Duel #${duelCard.displayId} was cancelled by an admin.`)
+              .setColor(0x888888),
+          ],
+          components: [],
+        }).catch(() => {});
+      }
+    }
+  }
+
+  await interaction.reply({
+    content: `✅ Cancelled duel #${duelCard.displayId} (status -> cancelled).`,
+    ephemeral: true,
+  }).catch(() => {});
 }
 
 // ── Job Selection (Select Menu) ───────────────────────────────────────
 
 async function handleSelect(interaction: StringSelectMenuInteraction): Promise<void> {
-  if (interaction.customId !== 'bobozan_job_select') return;
+  if (interaction.customId === 'bobozan_job_select') {
+    const session = SessionManager.getSession(interaction.user.id);
+    if (!session) {
+      await interaction.reply({ content: '❌ Match expired.', ephemeral: true });
+      return;
+    }
 
-  const session = SessionManager.getSession(interaction.user.id);
-  if (!session) {
-    await interaction.reply({ content: '❌ Match expired.', ephemeral: true });
-    return;
-  }
+    if (!session.isParticipant(interaction.user.id)) {
+      await interaction.reply({ content: '❌ You are not a player in this match.', ephemeral: true });
+      return;
+    }
 
-  if (!session.isParticipant(interaction.user.id)) {
-    await interaction.reply({ content: '❌ You are not a player in this match.', ephemeral: true });
-    return;
-  }
+    const selectedJob = interaction.values[0] as Job;
+    if (!Object.values(Job).includes(selectedJob)) {
+      await interaction.reply({ content: '❌ Invalid class.', ephemeral: true });
+      return;
+    }
 
-  const selectedJob = interaction.values[0] as Job;
-  if (!Object.values(Job).includes(selectedJob)) {
-    await interaction.reply({ content: '❌ Invalid class.', ephemeral: true });
-    return;
-  }
+    const existingJob = session.getPlayerJob(interaction.user.id);
+    if (existingJob) {
+      const { JOB_DISPLAY_EN } = await import('../models/enums');
+      const existingName = JOB_DISPLAY_EN[existingJob].name;
+      await interaction.reply({ content: `You already chose **${existingName}**.`, ephemeral: true });
+      return;
+    }
 
-  const existingJob = session.getPlayerJob(interaction.user.id);
-  if (existingJob) {
+    session.setJob(interaction.user.id, selectedJob);
     const { JOB_DISPLAY_EN } = await import('../models/enums');
-    const existingName = JOB_DISPLAY_EN[existingJob].name;
-    await interaction.reply({ content: `You already chose **${existingName}**.`, ephemeral: true });
+    const jobName = JOB_DISPLAY_EN[selectedJob].name;
+    await interaction.reply({
+      content: `✅ You chose **${jobName}**\nWaiting for opponent...`,
+      ephemeral: true,
+    });
+
+    if (session.bothJobsSelected) {
+      try {
+        await interaction.message.edit({
+          content: '⚔️ Both chose their class. Duel starting!',
+          embeds: [],
+          components: [],
+        });
+      } catch {}
+      await session.startBattle();
+    }
     return;
   }
 
-  session.setJob(interaction.user.id, selectedJob);
-  const { JOB_DISPLAY_EN } = await import('../models/enums');
-  const jobName = JOB_DISPLAY_EN[selectedJob].name;
-  await interaction.reply({
-    content: `✅ You chose **${jobName}**\nWaiting for opponent...`,
-    ephemeral: true,
-  });
-
-  if (session.bothJobsSelected) {
-    try {
-      await interaction.message.edit({
-        content: '⚔️ Both chose their class. Duel starting!',
-        embeds: [],
-        components: [],
-      });
-    } catch {}
-    await session.startBattle();
+  if (interaction.customId === 'bobozan_history_pick') {
+    return handleHistoryPick(interaction);
   }
+
+  return;
 }
 

@@ -9,11 +9,9 @@ import { Job, JOB_EMOJI, JOB_STATS, JOB_DISPLAY_EN } from '../models/enums';
 export type GuidebookJobKey = keyof typeof Job;
 
 export const GUIDEBOOK_JOB_ORDER: Job[] = [
-  Job.Swordsman,
-  Job.Bladesman,
-  Job.Assassin,
   Job.IronMonk,
-  Job.Engineer,
+  Job.Swordsman, // The Sword
+  Job.Bladesman, // The Blade
 ];
 
 const GUIDEBOOK_ASCII_ART: Record<Job, string> = {
@@ -62,7 +60,20 @@ export function buildGuidebookEmbed(job: Job): EmbedBuilder {
   const display = JOB_DISPLAY_EN[job];
   const emoji = JOB_EMOJI[job];
 
-  const ascii = GUIDEBOOK_ASCII_ART[job].trimEnd();
+  const breakText = (() => {
+    // V3 Break: cost 2 Killing Intent, deals 2 damage, ignores Defend.
+    // Then applies a class-specific next-round restriction.
+    switch (job) {
+      case Job.IronMonk:
+        return 'Shatter Strike: After using Break, you cannot Defend next round.';
+      case Job.Swordsman:
+        return 'Concealed Edge: If your opponent was not Defending, you cannot Charge next round.';
+      case Job.Bladesman:
+        return 'Armor Rend: Break consumes all Blade Intent this round (stacks reset).';
+      default:
+        return 'Break: costs 2 Killing Intent, deals 2 damage, and ignores Defend.';
+    }
+  })();
 
   return new EmbedBuilder()
     .setTitle(`📖 Guidebook — ${display.name}`)
@@ -71,67 +82,88 @@ export function buildGuidebookEmbed(job: Job): EmbedBuilder {
       [
         `${emoji} ${display.name}`,
         '',
-        '```',
-        ascii,
-        '```',
-        '',
-        `❤️ ${stats.hp} HP  ·  ⚡ Start Energy: ${stats.energy}  ·  🧨 Ult: ${stats.ultName} (cost ${stats.ultCost})`,
+        `❤️ ${stats.hp} HP  ·  ⚡ Start Killing Intent: ${stats.energy}  ·  🧨 Ult: ${stats.ultName} (cost ${stats.ultCost})`,
         '',
         `◆ **Passive:** ${display.passiveDesc}`,
         `◆ **Ultimate:** ${display.ultDesc}`,
+        '',
+        '💥 **Break (V3):**',
+        `• Cost: 2 Killing Intent`,
+        `• Effect: deal 2 damage and **ignore Defend**`,
+        `• Class effect: ${breakText}`,
       ].join('\n'),
     )
-    .setFooter({ text: `Use ◀️/▶️ to switch class · ${jobValueToKey(job)}` });
+    .setFooter({ text: 'Use the category buttons to switch sections.' });
 }
 
-export function buildGuidebookNavComponents(currentJob: Job): ActionRowBuilder<ButtonBuilder>[] {
-  const currentIdx = GUIDEBOOK_JOB_ORDER.findIndex(j => j === currentJob);
-  const currentKey = jobValueToKey(currentJob);
-
-  const prevJob = currentIdx > 0 ? GUIDEBOOK_JOB_ORDER[currentIdx - 1] : null;
-  const nextJob = currentIdx < GUIDEBOOK_JOB_ORDER.length - 1 ? GUIDEBOOK_JOB_ORDER[currentIdx + 1] : null;
-
+export function buildGuidebookNavComponents(_currentJob?: Job): ActionRowBuilder<ButtonBuilder>[] {
   const components: ActionRowBuilder<ButtonBuilder>[] = [];
   const row = new ActionRowBuilder<ButtonBuilder>();
+  // Class selection buttons (shown after category click).
+  for (const job of GUIDEBOOK_JOB_ORDER) {
+    const key = jobValueToKey(job);
+    const display = JOB_DISPLAY_EN[job];
+    const emoji = JOB_EMOJI[job];
 
-  if (prevJob) {
-    const key = jobValueToKey(prevJob);
     row.addComponents(
       new ButtonBuilder()
         .setCustomId(`bobozan_guidebook_show:${key}`)
-        .setLabel('◀️ Prev')
+        .setLabel(`${emoji} ${display.name}`)
         .setStyle(ButtonStyle.Secondary),
-    );
-  } else {
-    // Keep a consistent layout even on first page.
-    row.addComponents(
-      new ButtonBuilder()
-        .setCustomId(`bobozan_guidebook_show:${currentKey}`)
-        .setLabel('◀️ Prev')
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(true),
-    );
-  }
-
-  if (nextJob) {
-    const key = jobValueToKey(nextJob);
-    row.addComponents(
-      new ButtonBuilder()
-        .setCustomId(`bobozan_guidebook_show:${key}`)
-        .setLabel('Next ▶️')
-        .setStyle(ButtonStyle.Primary),
-    );
-  } else {
-    row.addComponents(
-      new ButtonBuilder()
-        .setCustomId(`bobozan_guidebook_show:${currentKey}`)
-        .setLabel('Next ▶️')
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(true),
     );
   }
 
   components.push(row);
   return components;
+}
+
+export function buildGuidebookCategoryNavComponents(): ActionRowBuilder<ButtonBuilder>[] {
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('bobozan_guidebook_category:classes')
+      .setLabel('🧩 Classes')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('bobozan_guidebook_category:combat')
+      .setLabel('⚔️ Combat')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('bobozan_guidebook_category:reward')
+      .setLabel('🎁 Reward')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('bobozan_guidebook_category:ranks')
+      .setLabel('🏷️ Ranks')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId('bobozan_guidebook_category:rules')
+      .setLabel('📜 Rules')
+      .setStyle(ButtonStyle.Primary),
+  );
+
+  return [row];
+}
+
+export function buildGuidebookCombatNavComponents(): ActionRowBuilder<ButtonBuilder>[] {
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('bobozan_guidebook_combat:charge').setLabel('Charge').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('bobozan_guidebook_combat:attack').setLabel('Attack').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('bobozan_guidebook_combat:defend').setLabel('Defend').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('bobozan_guidebook_combat:break').setLabel('Break').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('bobozan_guidebook_combat:ultimate').setLabel('Ultimate').setStyle(ButtonStyle.Secondary),
+  );
+
+  return [row];
+}
+
+export function buildGuidebookRulesNavComponents(): ActionRowBuilder<ButtonBuilder>[] {
+  // Rules category: Basics / Time / Full Rules
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId('bobozan_guidebook_rules:basics').setLabel('Basics').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('bobozan_guidebook_rules:time').setLabel('Time').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('bobozan_guidebook_rules:full').setLabel('Rules').setStyle(ButtonStyle.Primary),
+  );
+
+  return [row];
 }
 

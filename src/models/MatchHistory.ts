@@ -19,6 +19,8 @@ export interface IMatchHistory extends Document {
   duelCardId?: string;
   duelDisplayId?: string;
   guildId?: string;
+  /** Saved so players can view combat log history even if temp duel channels are deleted. */
+  combatLogLines?: string[];
   createdAt?: Date;
 }
 
@@ -42,6 +44,7 @@ const MatchHistorySchema = new Schema(
     duelCardId: { type: String, index: true },
     duelDisplayId: { type: String, index: true },
     guildId: { type: String, index: true },
+    combatLogLines: { type: [String], default: [] },
   },
   { timestamps: true, collection: 'bobozan_match_history' },
 );
