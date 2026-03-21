@@ -14,37 +14,42 @@
 
 ---
 
-Button-based challenges, temporary duel channels, Honor Points integration. Inspired by Chinese martial arts — 5 classes, Elo-style ladder.
+Button-based challenges, **three-channel** temp duel (public hub + two private pick channels), ladder in MongoDB, optional **Honor Points API** for post-match rewards, optional **discord-bots-logger** for analytics. Terminology and UX use **Killing Intent** (ลมฆ่า) in copy.
 
 ## 📋 Overview
 
 | | |
 |---|---|
 | **Part of** | Phantom Blade Zero (PBZ) — Discord bot ecosystem |
-| **Role** | In-server mini-game: challenge, class selection, battle, ladder |
+| **Role** | In-server mini-game: open/target challenge, class pick, battle, ladder |
 | **Stack** | TypeScript, Discord.js v14, MongoDB |
 
 ---
 
 ## ✨ Features
 
-- **9 fixed channels** — Hub, Challenge cards, Match history, Leaderboard, Ranks, Rules, Honor, My Stats, Guidebook.
-- **Temp duel channels** — Visible only to the two players (and optional admin role); auto-deleted after match.
-- **5 classes** — Swordsman, Bladesman, Assassin, Iron Monk, Engineer (passive + ultimate).
-- **Ladder** — Stored in MongoDB; optional `HONOR_POINTS_API_*` for central economy.
+- **Fixed channels (7 env targets)** — Hub (challenge buttons only), challenge cards, match history, admin tools, leaderboard, guidebook, plus a **forum** for bug reports (modal creates a thread; no temp-channel bug button).
+- **Per-match channels** — One **public** thread/channel for spectators + combat summary, and **two private** channels (one per player) for job select and round picks; optional `BOBOZAN_ADMIN_ROLE_ID` so staff can view temp channels.
+- **V3 classes (duels)** — **Iron Monk**, **Swordsman**, **Bladesman** only (passive + ultimate). Guidebook may document legacy classes for reference.
+- **Ladder** — Elo-style profiles and match history in MongoDB (`bobozan_*` collections). **Honor total** on the ladder profile is separate from the central Honor balance unless you sync via API.
+- **Honor sync** — After settlement, optional `HONOR_POINTS_API_*` credits the central economy. Set `SHADOW_DUEL_SKIP_HONOR_POINTS=true` to disable API calls (testing).
+- **Logging** — Optional `BOTS_LOGGER_*` → `discord-bots-logger` with `botId: wuxia-bobozan`, category `shadow_duel`.
 
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-cp .env.example .env   # DISCORD_*, all BOBOZAN_*_CHANNEL_ID, MONGO_URI
+cp .env.example .env   # DISCORD_*, SHADOW_DUEL_* channels, MONGO_URI, optional HONOR / LOGGER
 npm install && npm run build && npm run deploy
 npm start
 ```
 
-**Docker:** Uses honor-points-service network; `MONGO_URI` overridden to `mongodb://mongodb:27017/honorbot`.  
-`docker compose up -d --build`
+**Docker:** Join the same Docker network as **honor-points-service** if using shared MongoDB/API; set `MONGO_URI` accordingly (e.g. `mongodb://mongodb:27017/honorbot`).
+
+```bash
+docker compose up -d --build
+```
 
 ---
 
@@ -53,10 +58,20 @@ npm start
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DISCORD_TOKEN`, `CLIENT_ID`, `GUILD_ID` | Yes | Discord app |
-| `BOBOZAN_HUB_CHANNEL_ID` … `BOBOZAN_GUIDEBOOK_CHANNEL_ID` | Yes | All fixed channel IDs |
-| `MONGO_URI` | Yes | Same DB as other PBZ bots in production |
-| `HONOR_POINTS_API_URL`, `HONOR_POINTS_API_KEY` | No | Central Honor API |
+| `SHADOW_DUEL_HUB_CHANNEL` | Yes | Hub: Open / Target challenge only |
+| `SHADOW_DUEL_CHALLENGE_CHANNEL_ID` | Yes | Challenge card posts |
+| `SHADOW_DUEL_HISTORY_CHANNEL_ID` | Yes | Public match history feed |
+| `SHADOW_DUEL_ADMIN_CHANNEL_ID` | Yes | Admin: export, reset, cancel duel |
+| `SHADOW_DUEL_LEADERBOARD_CHANNEL_ID` | Yes | Persistent leaderboard message |
+| `SHADOW_DUEL_GUIDEBOOK_CHANNEL_ID` | Yes | Rules / classes / flow (categories) |
+| `SHADOW_DUEL_FORUMS_CHANNEL_ID` | Yes | Forum for bug-report threads from modal |
+| `MONGO_URI` | Yes | Same `honorbot` DB as other PBZ bots in production |
+| `HONOR_POINTS_API_URL`, `HONOR_POINTS_API_KEY` | No | Central Honor API (settlement rewards) |
+| `SHADOW_DUEL_SKIP_HONOR_POINTS` | No | `true` / `1` = skip honor API on settlement |
+| `BOTS_LOGGER_URL`, `BOTS_LOGGER_API_KEY` | No | Action log aggregator |
 | `BOBOZAN_ADMIN_ROLE_ID` | No | Role that can view temp duel channels |
+
+See **`.env.example`** for timeouts, channel prefix, and commented options.
 
 ---
 
@@ -64,9 +79,9 @@ npm start
 
 | Location | Description |
 |----------|-------------|
-| **docs/FLOW.md** | Flow diagrams (8 channels, temp duel, 3-embed battle UI, timeout rules) |
-| **docs/DASHBOARD.md** | Data sources for dashboard (MongoDB collections, schema) |
-| **reports/CHANGELOG.md** | Changelog and recent changes |
+| **docs/FLOW.md** | Flow: channels, duel lifecycle, combat log privacy, logger |
+| **docs/DASHBOARD.md** | MongoDB collections for **pbz-dashboard** Shadow Duel page |
+| **reports/CHANGELOG.md** | Changelog |
 
 ---
 
@@ -78,7 +93,7 @@ npm start
 | `npm start` | Run bot |
 | `npm run dev` | Run with nodemon |
 | `npm run reset-data` | Reset ladder and match history in MongoDB |
-| `npm run purge-history-channel` | Clear bot messages in Match History channel |
+| `npm run purge-history-channel` | Clear bot messages in match history channel (`SHADOW_DUEL_HISTORY_CHANNEL_ID`) |
 
 ---
 
