@@ -511,7 +511,7 @@ export class BattleSession {
     // V3 killing intent costs
     const isV3Class = player.job === Job.IronMonk || player.job === Job.Swordsman || player.job === Job.Bladesman;
     if (!isV3Class) {
-      return '❌ This duel uses only the 3 V3 classes.';
+      return '❌ This duel uses only Iron Monk, Swordsman, and Bladesman.';
     }
 
     const cost = (() => {
@@ -538,7 +538,7 @@ export class BattleSession {
     if (cost > 0) player.energy -= cost;
 
     if (action === Action.SetTrap) {
-      return '❌ Set Trap is not available in V3.';
+      return '❌ Set Trap is not available in this duel.';
     }
 
     return null;

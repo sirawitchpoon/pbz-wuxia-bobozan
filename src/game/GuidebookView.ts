@@ -87,7 +87,7 @@ export function buildGuidebookEmbed(job: Job): EmbedBuilder {
         `◆ **Passive:** ${display.passiveDesc}`,
         `◆ **Ultimate:** ${display.ultDesc}`,
         '',
-        '💥 **Break (V3):**',
+        '💥 **Break:**',
         `• Cost: 2 Killing Intent`,
         `• Effect: deal 2 damage and **ignore Defend**`,
         `• Class effect: ${breakText}`,
@@ -141,7 +141,14 @@ export function buildGuidebookCategoryNavComponents(): ActionRowBuilder<ButtonBu
       .setStyle(ButtonStyle.Primary),
   );
 
-  return [row];
+  const rowHowToPlay = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId('bobozan_guidebook_category:howtoplay')
+      .setLabel('📖 How to play')
+      .setStyle(ButtonStyle.Success),
+  );
+
+  return [row, rowHowToPlay];
 }
 
 export function buildGuidebookCombatNavComponents(): ActionRowBuilder<ButtonBuilder>[] {

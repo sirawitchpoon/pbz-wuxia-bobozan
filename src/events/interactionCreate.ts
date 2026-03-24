@@ -1092,9 +1092,15 @@ async function handleGuidebookShow(interaction: ButtonInteraction): Promise<void
 
 async function handleGuidebookCategory(interaction: ButtonInteraction): Promise<void> {
   const raw = interaction.customId.split(':')[1];
-  const category = raw as 'classes' | 'combat' | 'reward' | 'ranks' | 'rules' | undefined;
+  const category = raw as 'classes' | 'combat' | 'reward' | 'ranks' | 'rules' | 'howtoplay' | undefined;
   if (!category) {
     await interaction.reply({ content: '❌ Invalid guidebook category.', ephemeral: true }).catch(() => {});
+    return;
+  }
+
+  if (category === 'howtoplay') {
+    const { buildGuidebookHowToPlayEmbed } = await import('../game/buildGuidebookHowToPlayEmbed');
+    await interaction.reply({ embeds: [buildGuidebookHowToPlayEmbed()], ephemeral: true }).catch(() => {});
     return;
   }
 

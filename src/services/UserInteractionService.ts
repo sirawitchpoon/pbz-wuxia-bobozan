@@ -281,10 +281,10 @@ export class UserInteractionService {
     const embed = new EmbedBuilder()
       .setTitle('📖 Guidebook')
       .setDescription(
-        'Select a category below. Class details, Combat details, Rewards, Ranks, and Rules will be shown as ephemeral messages (only you can see them).',
+        'Select a category below. **How to play**, class details, combat details, rewards, ranks, and rules open as **ephemeral** messages (only you can see them).',
       )
       .setColor(0xd4a574)
-      .setFooter({ text: 'V3: Iron Monk / The Sword / The Blade · Break included' });
+      .setFooter({ text: 'Iron Monk / The Sword / The Blade · Break included' });
 
     // Persistent landing page: categories only.
     const components = buildGuidebookCategoryNavComponents();
