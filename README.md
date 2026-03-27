@@ -14,14 +14,14 @@
 
 ---
 
-Button-based challenges, **three-channel** temp duel (public hub + two private pick channels), ladder in MongoDB, optional **Honor Points API** for post-match rewards, optional **discord-bots-logger** for analytics. Terminology and UX use **Killing Intent** (ลมฆ่า) in copy.
+Button-based challenges, **three-channel** temp duel (public hub + two private pick channels), ladder in MongoDB, optional **Honor Points API** for post-match rewards, optional **discord-bots-logger** for analytics. Terminology and UX use **Killing Intent** in copy.
 
 ## 📋 Overview
 
 | | |
 |---|---|
 | **Part of** | Phantom Blade Zero (PBZ) — Discord bot ecosystem |
-| **Role** | In-server mini-game: open/target challenge, class pick, battle, ladder |
+| **Role** | In-server mini-game: open/target challenge, weapon pick, battle, ladder |
 | **Stack** | TypeScript, Discord.js v14, MongoDB |
 
 ---
@@ -30,7 +30,7 @@ Button-based challenges, **three-channel** temp duel (public hub + two private p
 
 - **Fixed channels (7 env targets)** — Hub (challenge buttons only), challenge cards, match history, admin tools, leaderboard, guidebook, plus a **forum** for bug reports (modal creates a thread; no temp-channel bug button).
 - **Per-match channels** — One **public** thread/channel for spectators + combat summary, and **two private** channels (one per player) for job select and round picks; optional `BOBOZAN_ADMIN_ROLE_ID` so staff can view temp channels.
-- **V3 classes (duels)** — **Iron Monk**, **Swordsman**, **Bladesman** only (passive + ultimate). Guidebook may document legacy classes for reference.
+- **V3 weapons (duels)** — **The Shield**, **The Sword**, **The Blade** only (passive + ultimate). Guidebook may document legacy classes for reference.
 - **Ladder** — Elo-style profiles and match history in MongoDB (`bobozan_*` collections). **Honor total** on the ladder profile is separate from the central Honor balance unless you sync via API.
 - **Honor sync** — After settlement, optional `HONOR_POINTS_API_*` credits the central economy. Set `SHADOW_DUEL_SKIP_HONOR_POINTS=true` to disable API calls (testing).
 - **Logging** — Optional `BOTS_LOGGER_*` → `discord-bots-logger` with `botId: wuxia-bobozan`, category `shadow_duel`.
@@ -63,7 +63,7 @@ docker compose up -d --build
 | `SHADOW_DUEL_HISTORY_CHANNEL_ID` | Yes | Public match history feed |
 | `SHADOW_DUEL_ADMIN_CHANNEL_ID` | Yes | Admin: export, reset, cancel duel |
 | `SHADOW_DUEL_LEADERBOARD_CHANNEL_ID` | Yes | Persistent leaderboard message |
-| `SHADOW_DUEL_GUIDEBOOK_CHANNEL_ID` | Yes | Rules / classes / flow (categories) |
+| `SHADOW_DUEL_GUIDEBOOK_CHANNEL_ID` | Yes | Rules / weapons / flow (categories) |
 | `SHADOW_DUEL_FORUMS_CHANNEL_ID` | Yes | Forum for bug-report threads from modal |
 | `MONGO_URI` | Yes | Same `honorbot` DB as other PBZ bots in production |
 | `HONOR_POINTS_API_URL`, `HONOR_POINTS_API_KEY` | No | Central Honor API (settlement rewards) |

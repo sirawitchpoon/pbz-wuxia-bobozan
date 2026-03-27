@@ -511,7 +511,7 @@ export class BattleSession {
     // V3 killing intent costs
     const isV3Class = player.job === Job.IronMonk || player.job === Job.Swordsman || player.job === Job.Bladesman;
     if (!isV3Class) {
-      return '❌ This duel uses only Iron Monk, Swordsman, and Bladesman.';
+      return '❌ This duel uses only The Shield, The Sword, and The Blade.';
     }
 
     const cost = (() => {

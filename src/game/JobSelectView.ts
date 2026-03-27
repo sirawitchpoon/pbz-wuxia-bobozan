@@ -10,21 +10,21 @@ const DUEL_V3_JOBS: Job[] = [Job.IronMonk, Job.Swordsman, Job.Bladesman];
 
 export function buildJobSelectEmbed(playerAName: string, playerBName: string): EmbedBuilder {
   const embed = new EmbedBuilder()
-    .setTitle('⚔️ Choose Your Martial Class')
+    .setTitle('⚔️ Choose Your Weapon')
     .setDescription(
       `🟥 **${playerAName}**  ╳  🟦 **${playerBName}**\n\n` +
-      `> Select your class from the dropdown below.\n` +
+      `> Select your weapon from the dropdown below.\n` +
       `> Your opponent **cannot see** your choice until the duel begins.`,
     )
     .setColor(0x5865f2)
-    .setFooter({ text: '⏱️ 60s to choose · Class cannot be changed after selection' });
+    .setFooter({ text: '⏱️ 60s to choose · Weapon cannot be changed after selection' });
 
   for (const job of DUEL_V3_JOBS) {
     const stats = JOB_STATS[job];
     const display = JOB_DISPLAY_EN[job];
     const emoji = JOB_EMOJI[job];
 
-    // Mini HP bar for class card (scale to 5 blocks)
+    // Mini HP bar for weapon card (scale to 5 blocks)
     const hpBlocks = Math.round((stats.hp / 7) * 5);
     const hpBar = '█'.repeat(hpBlocks) + '░'.repeat(5 - hpBlocks);
 
@@ -56,7 +56,7 @@ export function buildJobSelectMenu(): ActionRowBuilder<StringSelectMenuBuilder> 
 
   const menu = new StringSelectMenuBuilder()
     .setCustomId('bobozan_job_select')
-    .setPlaceholder('Choose your class...')
+    .setPlaceholder('Choose your weapon...')
     .addOptions(options);
 
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);

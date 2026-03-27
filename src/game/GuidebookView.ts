@@ -90,7 +90,7 @@ export function buildGuidebookEmbed(job: Job): EmbedBuilder {
         '💥 **Break:**',
         `• Cost: 2 Killing Intent`,
         `• Effect: deal 2 damage and **ignore Defend**`,
-        `• Class effect: ${breakText}`,
+        `• Weapon effect: ${breakText}`,
       ].join('\n'),
     )
     .setFooter({ text: 'Use the category buttons to switch sections.' });
@@ -99,7 +99,7 @@ export function buildGuidebookEmbed(job: Job): EmbedBuilder {
 export function buildGuidebookNavComponents(_currentJob?: Job): ActionRowBuilder<ButtonBuilder>[] {
   const components: ActionRowBuilder<ButtonBuilder>[] = [];
   const row = new ActionRowBuilder<ButtonBuilder>();
-  // Class selection buttons (shown after category click).
+  // Weapon selection buttons (shown after category click).
   for (const job of GUIDEBOOK_JOB_ORDER) {
     const key = jobValueToKey(job);
     const display = JOB_DISPLAY_EN[job];
@@ -121,7 +121,7 @@ export function buildGuidebookCategoryNavComponents(): ActionRowBuilder<ButtonBu
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
       .setCustomId('bobozan_guidebook_category:classes')
-      .setLabel('🧩 Classes')
+      .setLabel('🧩 Weapons')
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId('bobozan_guidebook_category:combat')

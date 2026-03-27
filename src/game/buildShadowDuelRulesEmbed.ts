@@ -14,7 +14,7 @@ export function buildShadowDuelRulesEmbed(): EmbedBuilder {
         name: '🎮 Basics',
         value: [
           '• Both players pick an action **at the same time** each round; your opponent **cannot see** your choice.',
-          '• Classes: **Iron Monk**, **The Sword**, **The Blade** — HP and passives differ.',
+          '• Weapons: **The Shield**, **The Sword**, **The Blade** — HP and passives differ.',
           '• **Killing Intent** is your action resource (shown as ⚡). HP **0** = loss; both **0** = draw.',
         ].join('\n'),
       },
@@ -35,7 +35,7 @@ export function buildShadowDuelRulesEmbed(): EmbedBuilder {
         name: '💥 Break',
         value: [
           'Costs **2 Killing Intent**, deals **2** damage, **ignores Defend**.',
-          '• **Iron Monk — Shatter Strike:** you cannot **Defend** next round.',
+          '• **The Shield — Shatter Strike:** you cannot **Defend** next round.',
           '• **The Sword — Concealed Edge:** if the opponent was **not** Defending, you cannot **Charge** next round.',
           '• **The Blade — Armor Rend:** consumes **Blade Intent** (same round reset as Attack/Ult).',
         ].join('\n'),
@@ -43,7 +43,7 @@ export function buildShadowDuelRulesEmbed(): EmbedBuilder {
       {
         name: '🟢 Ultimate',
         value:
-          '**3 Killing Intent**, class-specific (see Guidebook). **Iron Monk — Meridian Lock** also sets opponent Killing Intent to **0** after damage.',
+          '**3 Killing Intent**, weapon-specific (see Guidebook). **The Shield — Meridian Lock** also sets opponent Killing Intent to **0** after damage.',
       },
       {
         name: '⏱️ Time',
@@ -79,7 +79,7 @@ export function buildShadowDuelRulesSectionEmbed(section: ShadowDuelRulesSection
         .setTitle('🎮 Basics')
         .setDescription([
           '• Both players pick an action **at the same time** each round; your opponent **cannot see** your choice.',
-          '• Classes: **Iron Monk**, **The Sword**, **The Blade** — HP and passives differ.',
+          '• Weapons: **The Shield**, **The Sword**, **The Blade** — HP and passives differ.',
           '• **Killing Intent** (⚡) is your action resource. HP **0** = loss; both **0** = draw.',
         ].join('\n'));
 
@@ -108,16 +108,16 @@ export function buildShadowDuelRulesSectionEmbed(section: ShadowDuelRulesSection
           'Blocks **Attack**.',
           'Ultimates are **halved** (rounded down), not fully blocked.',
           'Does **not** stop **Break** (Break still ignores Defend).',
-          'May trigger class passives.',
+          'May trigger weapon passives.',
         ].join('\n'));
 
     case 'ultimate':
       return base
         .setTitle('🟢 Ultimate')
         .setDescription([
-          '**3 Killing Intent**, class-specific (see Guidebook).',
+          '**3 Killing Intent**, weapon-specific (see Guidebook).',
           '',
-          'Iron Monk — Meridian Lock: deal **2** damage (halved by Defend → 1). After damage, set opponent Killing Intent to **0**.',
+          'The Shield — Meridian Lock: deal **2** damage (halved by Defend → 1). After damage, set opponent Killing Intent to **0**.',
           'The Sword — Phantom Flurry: deal **3** damage (halved by Defend → 1). The Sword also **self-defends this round** (blocks incoming Attacks only).',
           'The Blade — Deathblow: deal **(1 + Blade Intent)** damage (halved by Defend → rounded down).',
         ].join('\n'));
@@ -128,7 +128,7 @@ export function buildShadowDuelRulesSectionEmbed(section: ShadowDuelRulesSection
         .setDescription([
           'Costs **2 Killing Intent**, deals **2** damage, and **ignores Defend**.',
           '',
-          'Iron Monk — Shatter Strike: you cannot **Defend** next round.',
+          'The Shield — Shatter Strike: you cannot **Defend** next round.',
           'The Sword — Concealed Edge: if the opponent was **not Defending**, you cannot **Charge** next round.',
           'The Blade — Armor Rend: **consumes all Blade Intent** this round (stacks reset).',
         ].join('\n'));

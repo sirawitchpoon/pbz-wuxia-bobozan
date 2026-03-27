@@ -681,7 +681,7 @@ async function handleAcceptChallenge(interaction: ButtonInteraction): Promise<vo
       `${challenger} ${acceptor}\n\n` +
       `**Shadow Duel #${displayId}** — This channel is the **Combat Log** (round summary and admin tools).\n\n` +
       `For any issues, please create a post directly in the **Shadow Duel Bug & Suggestion Forums**: ${forumMention}\n\n` +
-      `🎮 **Choose your class and actions only in your private room:**\n` +
+      `🎮 **Choose your weapon and actions only in your private room:**\n` +
       `• **${challenger.displayName}** → <#${privateAChannel.id}>\n` +
       `• **${acceptor.displayName}** → <#${privateBChannel.id}>\n\n` +
       `_Do not play from this channel — use your private room so your opponent cannot see your choices._`,
@@ -690,12 +690,12 @@ async function handleAcceptChallenge(interaction: ButtonInteraction): Promise<vo
   const selectEmbed = buildJobSelectEmbed(challenger.displayName, acceptor.displayName);
   const selectMenu = buildJobSelectMenu();
   await privateAChannel.send({
-    content: `${challenger} — Choose your class below (only you can see this channel).`,
+    content: `${challenger} — Choose your weapon below (only you can see this channel).`,
     embeds: [selectEmbed],
     components: [selectMenu],
   });
   await privateBChannel.send({
-    content: `${acceptor} — Choose your class below (only you can see this channel).`,
+    content: `${acceptor} — Choose your weapon below (only you can see this channel).`,
     embeds: [selectEmbed],
     components: [selectMenu],
   });
@@ -1080,7 +1080,7 @@ async function handleGuidebookShow(interaction: ButtonInteraction): Promise<void
 
   const job = (Job as any)[jobKey] as Job | undefined;
   if (!job || !GUIDEBOOK_JOB_ORDER.includes(job)) {
-    await interaction.reply({ content: '❌ Invalid class.', ephemeral: true });
+    await interaction.reply({ content: '❌ Invalid weapon.', ephemeral: true });
     return;
   }
 
@@ -1106,8 +1106,8 @@ async function handleGuidebookCategory(interaction: ButtonInteraction): Promise<
 
   if (category === 'classes') {
     const prompt = new EmbedBuilder()
-      .setTitle('📚 Classes')
-      .setDescription('Pick your class to view its full details (ephemeral).')
+      .setTitle('📚 Weapons')
+      .setDescription('Pick your weapon to view its full details (ephemeral).')
       .setColor(0xd4a574);
     const components = buildGuidebookNavComponents();
     await interaction.reply({ embeds: [prompt], components, ephemeral: true }).catch(() => {});
@@ -1479,7 +1479,7 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
 
     const selectedJob = interaction.values[0] as Job;
     if (!Object.values(Job).includes(selectedJob)) {
-      await interaction.reply({ content: '❌ Invalid class.', ephemeral: true });
+      await interaction.reply({ content: '❌ Invalid weapon.', ephemeral: true });
       return;
     }
 
@@ -1502,7 +1502,7 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
     if (session.bothJobsSelected) {
       try {
         await interaction.message.edit({
-          content: '⚔️ Both chose their class. Duel starting!',
+          content: '⚔️ Both chose their weapon. Duel starting!',
           embeds: [],
           components: [],
         });

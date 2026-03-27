@@ -21,6 +21,6 @@ export class Effect {
   }
 }
 
-export const EFFECT_ROOTED = '盘根';
-export const EFFECT_ATTACK_BAN = '禁招';
-export const EFFECT_CROSSBOW = '连弩';
+export const EFFECT_ROOTED = 'Rooted';
+export const EFFECT_ATTACK_BAN = 'Attack Ban';
+export const EFFECT_CROSSBOW = 'Crossbow';

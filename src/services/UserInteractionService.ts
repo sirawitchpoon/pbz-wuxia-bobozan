@@ -87,7 +87,7 @@ export class UserInteractionService {
         '**How to start a duel:**\n' +
         '🟠 **Open Challenge** — Post a challenge; anyone can accept.\n' +
         '🔴 **Target Challenge** — Choose a specific opponent.\n\n' +
-        'Use the Guidebook in-game to access class, combat, reward, rank, and rules details.',
+        'Use the Guidebook in-game to access weapon, combat, reward, rank, and rules details.',
       )
       .setColor(0xd4a574)
       .setFooter({ text: 'Shadow Duel · Turn-based 1v1 duel' });
@@ -281,10 +281,10 @@ export class UserInteractionService {
     const embed = new EmbedBuilder()
       .setTitle('📖 Guidebook')
       .setDescription(
-        'Select a category below. **How to play**, class details, combat details, rewards, ranks, and rules open as **ephemeral** messages (only you can see them).',
+        'Select a category below. **How to play**, weapon details, combat details, rewards, ranks, and rules open as **ephemeral** messages (only you can see them).',
       )
       .setColor(0xd4a574)
-      .setFooter({ text: 'Iron Monk / The Sword / The Blade · Break included' });
+      .setFooter({ text: 'The Shield / The Sword / The Blade · Break included' });
 
     // Persistent landing page: categories only.
     const components = buildGuidebookCategoryNavComponents();
