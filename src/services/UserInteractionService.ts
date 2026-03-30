@@ -14,10 +14,11 @@ import { setLeaderboardMessageId } from './ChannelMessageStore';
 import {
   buildGuidebookCategoryNavComponents,
 } from '../game/GuidebookView';
+import { getShadowDuelHubChannelId } from '../utils/shadowDuelEnv';
 
 /**
  * Manages persistent messages:
- * - Channel 1 (Hub): Open Challenge + Target Challenge only
+ * - Channel 1 (Hub): Open Challenge, Target Challenge, Practice (PvE)
  * - Channel 4: Leaderboard (updated on match end)
  * - Channel 5: Ranks (static)
  * - Channel 6: Rules (static)
@@ -55,28 +56,68 @@ export class UserInteractionService {
   }
 
   private async setupHub(): Promise<void> {
-    const channelId = process.env.SHADOW_DUEL_HUB_CHANNEL;
-    if (!channelId || !this.client) return;
+    const channelId = getShadowDuelHubChannelId();
+    if (!this.client) {
+      logger.warn('[Hub] setupHub skipped: client not set');
+      return;
+    }
+    if (!channelId) {
+      logger.warn(
+        '[Hub] Set SHADOW_DUEL_HUB_CHANNEL_ID (recommended) or SHADOW_DUEL_HUB_CHANNEL in .env — Hub message was not posted.',
+      );
+      return;
+    }
 
-    const channel = await this.client.channels.fetch(channelId).catch(() => null);
-    if (!channel || !(channel instanceof TextChannel)) return;
+    const channel = await this.client.channels.fetch(channelId).catch((err: unknown) => {
+      logger.error('[Hub] Failed to fetch channel', channelId, err);
+      return null;
+    });
+    if (!channel) {
+      logger.error('[Hub] Channel fetch returned null — wrong ID or bot cannot see this channel:', channelId);
+      return;
+    }
+    if (!(channel instanceof TextChannel)) {
+      logger.error('[Hub] Channel is not a text channel:', channelId, 'type=', channel.type);
+      return;
+    }
 
-    const messages = await channel.messages.fetch({ limit: 10 });
-    const existing = messages.find(
-      m =>
-        m.author.id === this.client!.user?.id &&
-        m.embeds.length > 0 &&
-        (m.embeds[0].title?.includes('Hub') || m.embeds[0].title?.includes('Arena')),
-    );
+    // Scan enough history so we edit the real Hub post — if it's not in this window,
+    // we'd post a duplicate and members would still see the old buttons/embed.
+    const messages = await channel.messages.fetch({ limit: 100 }).catch((err: unknown) => {
+      logger.error('[Hub] Failed to fetch message history:', err);
+      return null;
+    });
+    const existing =
+      messages?.find(
+        m =>
+          m.author.id === this.client!.user?.id &&
+          m.embeds.length > 0 &&
+          (m.embeds[0].title?.includes('Hub') || m.embeds[0].title?.includes('Arena')),
+      ) ?? null;
 
     const embed = this.buildHubEmbed();
     const components = this.buildHubButtons();
 
     if (existing) {
-      await existing.edit({ embeds: [embed], components }).catch(() => {});
+      try {
+        await existing.edit({ embeds: [embed], components });
+        logger.info('[Hub] Updated existing Hub message', existing.id, 'in', channelId);
+      } catch (err) {
+        logger.error('[Hub] Failed to edit Hub message — check bot permissions (Embed, Send):', err);
+      }
       return;
     }
-    await channel.send({ embeds: [embed], components });
+
+    try {
+      const msg = await channel.send({ embeds: [embed], components });
+      logger.info('[Hub] Posted new Hub message', msg.id, 'in', channel.name, channelId);
+    } catch (err) {
+      logger.error(
+        '[Hub] Failed to send Hub message — bot needs View channel + Send messages + Embed links in #shadow-duel-hub:',
+        err,
+      );
+      throw err;
+    }
   }
 
   private buildHubEmbed(): EmbedBuilder {
@@ -86,7 +127,8 @@ export class UserInteractionService {
         'Turn-based psychological duel game.\nInspired by Chinese martial arts — real-time 1v1.\n\n' +
         '**How to start a duel:**\n' +
         '🟠 **Open Challenge** — Post a challenge; anyone can accept.\n' +
-        '🔴 **Target Challenge** — Choose a specific opponent.\n\n' +
+        '🔴 **Target Challenge** — Choose a specific opponent.\n' +
+        '🟢 **Practice (PvE)** — Fight the training AI. No Honor Points or ladder rating changes.\n\n' +
         'Use the Guidebook in-game to access weapon, combat, reward, rank, and rules details.',
       )
       .setColor(0xd4a574)
@@ -104,6 +146,10 @@ export class UserInteractionService {
           .setCustomId('bobozan_target_challenge')
           .setLabel('🎯 Target Challenge')
           .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder()
+          .setCustomId('bobozan_pve_practice')
+          .setLabel('🥋 Practice (PvE)')
+          .setStyle(ButtonStyle.Success),
         new ButtonBuilder()
           .setCustomId('bobozan_my_profile')
           .setLabel('📊 My Stats')

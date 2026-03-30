@@ -112,6 +112,11 @@ async function handleButton(interaction: ButtonInteraction): Promise<void> {
     return handleTargetChallenge(interaction);
   }
 
+  // Hub: practice vs AI (no Honor / ladder)
+  if (id === 'bobozan_pve_practice') {
+    return handlePvePractice(interaction);
+  }
+
   // Hub: info buttons (ephemeral)
   if (id === 'bobozan_my_profile') return handleProfileButton(interaction);
   if (id === 'bobozan_leaderboard') return handleLeaderboardButton(interaction);
@@ -444,6 +449,223 @@ async function handleUserSelect(interaction: UserSelectMenuInteraction): Promise
       }
     } catch {}
   }, CHALLENGE_EXPIRE_MS);
+}
+
+// ── Practice (PvE) ────────────────────────────────────────────────────
+
+async function handlePvePractice(interaction: ButtonInteraction): Promise<void> {
+  const user = interaction.user;
+
+  if (SessionManager.hasActiveSession(user.id)) {
+    await interaction.reply({ content: '❌ You are already in a match.', ephemeral: true });
+    return;
+  }
+
+  await connectDB();
+  if (!isDBConnected()) {
+    await interaction.reply({
+      content: '❌ **MONGO_URI** is required for duel IDs (e.g. 001).',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const guild = interaction.guild;
+  if (!guild) {
+    await interaction.reply({ content: '❌ Use this from inside a server only.', ephemeral: true });
+    return;
+  }
+
+  const { displayId, seq } = await nextDuelDisplayId(guild.id);
+  const card = await DuelCard.create({
+    guildId: guild.id,
+    displaySeq: seq,
+    displayId,
+    challengeType: 'pve',
+    challengerId: user.id,
+    status: 'in_match',
+  });
+
+  const aiPlayerId = `pve-ai-${String(card._id)}`;
+  const session = new BattleSession(
+    interaction.client,
+    user.id,
+    user.displayName,
+    aiPlayerId,
+    'Training Opponent',
+    true,
+  );
+  SessionManager.registerSession(session);
+
+  await interaction.deferReply({ ephemeral: true }).catch(() => {});
+
+  const adminRoleId = process.env.BOBOZAN_ADMIN_ROLE_ID;
+  const prefix = (process.env.BOBOZAN_DUEL_CHANNEL_PREFIX || 'sd').toLowerCase().replace(/[^a-z0-9]/g, '') || 'sd';
+  const slugA = duelUsernameSlug(user.displayName, user.id);
+  const pubName = `${prefix}${displayId}-combat-log`.toLowerCase().slice(0, 100);
+  const privAName = `${prefix}${displayId}-${slugA}`.toLowerCase().slice(0, 100);
+  const privBName = `${prefix}${displayId}-ai`.toLowerCase().slice(0, 100);
+
+  const humanId = user.id;
+
+  const categoryBaseOverwrites: { id: string; allow?: bigint; deny?: bigint }[] = [
+    { id: guild.id, deny: PermissionFlagsBits.ViewChannel },
+    {
+      id: humanId,
+      allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ReadMessageHistory,
+    },
+  ];
+  if (adminRoleId) {
+    categoryBaseOverwrites.push({
+      id: adminRoleId,
+      allow:
+        PermissionFlagsBits.ViewChannel |
+        PermissionFlagsBits.SendMessages |
+        PermissionFlagsBits.ReadMessageHistory |
+        PermissionFlagsBits.ManageChannels,
+    });
+  }
+
+  let category: { id: string };
+  let publicChannel: TextChannel;
+  let privateAChannel: TextChannel;
+  let privateBChannel: TextChannel;
+
+  try {
+    category = await guild.channels.create({
+      name: `Shadow Duel Practice - ${displayId}`,
+      type: ChannelType.GuildCategory,
+      permissionOverwrites: categoryBaseOverwrites,
+    });
+
+    const pubOver = [
+      { id: guild.id, deny: PermissionFlagsBits.ViewChannel },
+      {
+        id: humanId,
+        allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ReadMessageHistory,
+      },
+      ...(adminRoleId
+        ? [{ id: adminRoleId, allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.ReadMessageHistory }]
+        : []),
+    ];
+
+    const privAOver = [
+      { id: guild.id, deny: PermissionFlagsBits.ViewChannel },
+      {
+        id: humanId,
+        allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages | PermissionFlagsBits.ReadMessageHistory,
+      },
+      ...(adminRoleId
+        ? [{ id: adminRoleId, allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.ReadMessageHistory }]
+        : []),
+    ];
+
+    const privBOver = [
+      { id: guild.id, deny: PermissionFlagsBits.ViewChannel },
+      { id: humanId, deny: PermissionFlagsBits.ViewChannel },
+      ...(adminRoleId
+        ? [{ id: adminRoleId, allow: PermissionFlagsBits.ViewChannel | PermissionFlagsBits.ReadMessageHistory }]
+        : []),
+    ];
+
+    publicChannel = (await guild.channels.create({
+      name: pubName,
+      type: ChannelType.GuildText,
+      parent: category.id,
+      permissionOverwrites: pubOver,
+    })) as TextChannel;
+
+    privateAChannel = (await guild.channels.create({
+      name: privAName,
+      type: ChannelType.GuildText,
+      parent: category.id,
+      permissionOverwrites: privAOver,
+    })) as TextChannel;
+
+    privateBChannel = (await guild.channels.create({
+      name: privBName,
+      type: ChannelType.GuildText,
+      parent: category.id,
+      permissionOverwrites: privBOver,
+    })) as TextChannel;
+  } catch (err) {
+    logger.error('Failed to create PvE duel channels:', err);
+    SessionManager.removeSession(session);
+    await DuelCard.deleteOne({ _id: card._id }).catch(() => {});
+    await interaction.editReply({
+      content: '❌ Failed to create practice channels — check bot permissions (Manage Channels).',
+    });
+    return;
+  }
+
+  await DuelCard.updateOne(
+    { _id: card._id },
+    {
+      $set: {
+        categoryId: category.id,
+        publicChannelId: publicChannel.id,
+        privateChannelAId: privateAChannel.id,
+        privateChannelBId: privateBChannel.id,
+      },
+    },
+  );
+
+  session.attachChannels(publicChannel, privateAChannel, privateBChannel);
+  session.setDuelCardMeta(String(card._id), displayId, guild.id);
+
+  const forumId = process.env.SHADOW_DUEL_FORUMS_CHANNEL_ID;
+  const forumMention = forumId ? `<#${forumId}>` : 'Shadow Duel Bug & Suggestion Forums';
+
+  await publicChannel.send({
+    content:
+      `${user}\n\n` +
+      `**Shadow Duel #${displayId} (Practice)** — Public combat log. **No Honor Points or ladder rating changes.**\n\n` +
+      `For issues, use **Shadow Duel Bug & Suggestion Forums**: ${forumMention}\n\n` +
+      `🎮 **Pick your weapon in your private room:**\n` +
+      `• **${user.displayName}** → <#${privateAChannel.id}>\n` +
+      `• **Training Opponent (AI)** — moves are chosen automatically after you lock in each round. (Admin-only channel: <#${privateBChannel.id}>)\n\n` +
+      `_Play from your private room so your choices stay hidden until the round resolves._`,
+  });
+
+  const selectEmbed = buildJobSelectEmbed(user.displayName, 'Training Opponent (AI)');
+  const selectMenu = buildJobSelectMenu();
+  await privateAChannel.send({
+    content: `${user} — Choose your weapon below (practice match).`,
+    embeds: [selectEmbed],
+    components: [selectMenu],
+  });
+
+  BotsLogger.logAction({
+    botId: 'wuxia-bobozan',
+    category: 'shadow_duel',
+    action: 'pve_practice_started',
+    userId: user.id,
+    username: user.displayName,
+    details: {
+      duelCardId: String(card._id),
+      duelDisplayId: displayId,
+      guildId: guild.id,
+    },
+  }).catch(() => {});
+
+  await interaction.editReply({
+    content: `✅ Practice arena ready — **#${displayId}**. Combat log: <#${publicChannel.id}>`,
+  });
+
+  setTimeout(async () => {
+    if (!session.bothJobsSelected) {
+      SessionManager.removeSession(session);
+      await DuelCard.updateOne({ _id: card._id }, { $set: { status: 'cancelled' } }).catch(() => {});
+      try {
+        await deleteDuelChannelShell(guild, {
+          categoryId: category.id,
+          publicId: publicChannel.id,
+          privateAId: privateAChannel.id,
+          privateBId: privateBChannel.id,
+        });
+      } catch {}
+    }
+  }, 60_000);
 }
 
 // ── Accept / Decline ──────────────────────────────────────────────────
@@ -1492,17 +1714,36 @@ async function handleSelect(interaction: StringSelectMenuInteraction): Promise<v
     }
 
     session.setJob(interaction.user.id, selectedJob);
+
+    if (session.practiceMode && interaction.user.id === session.playerAId) {
+      const v3Jobs = [Job.Swordsman, Job.Bladesman, Job.IronMonk];
+      const aiJob = v3Jobs[Math.floor(Math.random() * v3Jobs.length)]!;
+      session.setJob(session.playerBId, aiJob);
+    }
+
     const { JOB_DISPLAY_EN } = await import('../models/enums');
     const jobName = JOB_DISPLAY_EN[selectedJob].name;
-    await interaction.reply({
-      content: `✅ You chose **${jobName}**\nWaiting for opponent...`,
-      ephemeral: true,
-    });
+
+    if (session.practiceMode) {
+      const aiJobChosen = session.getPlayerJob(session.playerBId);
+      const aiLabel = aiJobChosen ? JOB_DISPLAY_EN[aiJobChosen].name : 'Training Opponent';
+      await interaction.reply({
+        content: `✅ You chose **${jobName}**. The AI enters as **${aiLabel}**.`,
+        ephemeral: true,
+      });
+    } else {
+      await interaction.reply({
+        content: `✅ You chose **${jobName}**\nWaiting for opponent...`,
+        ephemeral: true,
+      });
+    }
 
     if (session.bothJobsSelected) {
       try {
         await interaction.message.edit({
-          content: '⚔️ Both chose their weapon. Duel starting!',
+          content: session.practiceMode
+            ? '⚔️ Weapons chosen. Practice duel starting!'
+            : '⚔️ Both chose their weapon. Duel starting!',
           embeds: [],
           components: [],
         });

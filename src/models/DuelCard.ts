@@ -1,6 +1,6 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 
-export type DuelChallengeType = 'open' | 'targeted';
+export type DuelChallengeType = 'open' | 'targeted' | 'pve';
 export type DuelCardStatus =
   | 'open'
   | 'accepted'
@@ -35,7 +35,7 @@ const DuelCardSchema = new Schema(
     guildId: { type: String, required: true, index: true },
     displaySeq: { type: Number, required: true },
     displayId: { type: String, required: true, index: true },
-    challengeType: { type: String, enum: ['open', 'targeted'], required: true },
+    challengeType: { type: String, enum: ['open', 'targeted', 'pve'], required: true },
     challengerId: { type: String, required: true, index: true },
     targetUserId: { type: String, index: true },
     status: {

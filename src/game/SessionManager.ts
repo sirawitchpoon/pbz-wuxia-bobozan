@@ -13,17 +13,20 @@ export function hasActiveSession(userId: string): boolean {
 
 export function registerSession(session: BattleSession): void {
   activeSessions.set(session.playerAId, session);
-  activeSessions.set(session.playerBId, session);
+  if (!session.practiceMode) {
+    activeSessions.set(session.playerBId, session);
+  }
 }
 
 export function removeSession(session: BattleSession): void {
   activeSessions.delete(session.playerAId);
-  activeSessions.delete(session.playerBId);
+  if (!session.practiceMode) {
+    activeSessions.delete(session.playerBId);
+  }
 }
 
 export function getActiveCount(): number {
-  // Each session registers 2 keys
-  return activeSessions.size / 2;
+  return new Set(activeSessions.values()).size;
 }
 
 export function getSessionByPublicChannelId(publicChannelId: string): BattleSession | undefined {

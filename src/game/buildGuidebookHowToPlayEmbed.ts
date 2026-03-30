@@ -1,4 +1,5 @@
 import { EmbedBuilder } from 'discord.js';
+import { getShadowDuelHubChannelId } from '../utils/shadowDuelEnv';
 
 function channelMention(id: string | undefined): string {
   const v = id?.trim();
@@ -12,7 +13,7 @@ function channelMention(id: string | undefined): string {
  * Ephemeral "How to play" guide for Shadow Duel. Channel mentions come from the same env keys as the bot.
  */
 export function buildGuidebookHowToPlayEmbed(): EmbedBuilder {
-  const hub = channelMention(process.env.SHADOW_DUEL_HUB_CHANNEL);
+  const hub = channelMention(getShadowDuelHubChannelId());
   const challenge = channelMention(process.env.SHADOW_DUEL_CHALLENGE_CHANNEL_ID);
   const history = channelMention(process.env.SHADOW_DUEL_HISTORY_CHANNEL_ID);
   const guidebook = channelMention(process.env.SHADOW_DUEL_GUIDEBOOK_CHANNEL_ID);
@@ -21,8 +22,9 @@ export function buildGuidebookHowToPlayEmbed(): EmbedBuilder {
 
   const description = [
     '**🕹️ QUICK START GUIDE**',
-    `**Initiate:** Go to ${hub} and click **Open Challenge** or **Target Challenge**.`,
-    `**Accept:** Pending matches appear in ${challenge}. Once accepted, the bot creates **temporary duel channels** (public recap + private pick channels).`,
+    `**Initiate:** Go to ${hub} and click **Open Challenge**, **Target Challenge**, or **Practice (PvE)**.`,
+    `**Accept:** PvP pending matches appear in ${challenge}. Once accepted, the bot creates **temporary duel channels** (public recap + private pick channels).`,
+    '**Practice (PvE):** From the Hub — fight the training AI instantly. **No Honor Points or ladder rating changes.**',
     '**Fight:** Choose your moves carefully! The battle is **turn-based**, round-by-round.',
     `**Win:** Results are posted publicly in ${history}.`,
     '',

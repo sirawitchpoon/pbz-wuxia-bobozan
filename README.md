@@ -58,7 +58,7 @@ docker compose up -d --build
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DISCORD_TOKEN`, `CLIENT_ID`, `GUILD_ID` | Yes | Discord app |
-| `SHADOW_DUEL_HUB_CHANNEL` | Yes | Hub: Open / Target challenge only |
+| `SHADOW_DUEL_HUB_CHANNEL_ID` | Yes | Hub embed + buttons (Open / Target / Practice). Alias: `SHADOW_DUEL_HUB_CHANNEL` |
 | `SHADOW_DUEL_CHALLENGE_CHANNEL_ID` | Yes | Challenge card posts |
 | `SHADOW_DUEL_HISTORY_CHANNEL_ID` | Yes | Public match history feed |
 | `SHADOW_DUEL_ADMIN_CHANNEL_ID` | Yes | Admin: export, reset, cancel duel |

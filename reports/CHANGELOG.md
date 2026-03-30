@@ -9,7 +9,7 @@ Summary of notable changes. All dates approximate.
 ### Channel layout & flow
 
 - **8 fixed channels:** Hub (Open + Target Challenge only), Challenge cards, Match history, Leaderboard, Ranks, Rules, Honor, My Stats.
-- **Temp duel channel:** Created when a challenge is accepted (`#duel-{A}-vs-{B}`). Visible only to the two players and optional `BOBOZAN_ADMIN_ROLE_ID`. Entire duel (class select + battle) runs there. Channel is **deleted automatically** after the match (delay: `BOBOZAN_TEMP_CHANNEL_DELETE_DELAY_MS`, default 5s).
+- **Temp duel channel:** Created when a challenge is accepted (`#duel-{A}-vs-{B}`). Visible only to the two players and optional `BOBOZAN_ADMIN_ROLE_ID`. Entire duel (class select + battle) runs there. Channel is **deleted automatically** after the match (delay: `SHADOW_DUEL_TEMP_CHANNEL_DELETE_DELAY_MS`, default 5s).
 - **Challenge cards** are posted in Channel 2 only. Challenge expiry: `BOBOZAN_CHALLENGE_EXPIRE_SECONDS` (default 180s).
 
 ### Temp channel UI (3 embeds)
@@ -36,7 +36,7 @@ Summary of notable changes. All dates approximate.
 - `ROUND_TIMEOUT_SECONDS` — Seconds per round to choose an action (default 20).
 - `ROUND_TIMEOUT_BOTH_IDLE_SECONDS` — Extra seconds when both players idle before declaring draw (default 60).
 - `BOBOZAN_CHALLENGE_EXPIRE_SECONDS` — Challenge card expiry (default 180).
-- `BOBOZAN_TEMP_CHANNEL_DELETE_DELAY_MS` — Delay before deleting temp channel after match end (default 5000).
+- `SHADOW_DUEL_TEMP_CHANNEL_DELETE_DELAY_MS` — Delay before deleting temp channels after match end (default 5000). Legacy alias: `BOBOZAN_TEMP_CHANNEL_DELETE_DELAY_MS`.
 - `BOBOZAN_ADMIN_ROLE_ID` — Optional role that can see temp duel channels.
 
 ### Rules & docs

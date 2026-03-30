@@ -14,8 +14,11 @@ import { BattleResult } from '../models/BattleResult';
 import { resolveRound, RoundLog } from '../engine/resolveRound';
 import * as SessionManager from './SessionManager';
 import * as SettlementService from '../services/SettlementService';
+import type { SettlementResult } from '../services/SettlementService';
 import { formatHonorBreakdown } from '../services/HonorCalculator';
 import { logger } from '../utils/logger';
+import { DuelCard } from '../models/DuelCard';
+import { MatchHistory } from '../models/MatchHistory';
 
 const ROUND_TIMEOUT = parseInt(process.env.ROUND_TIMEOUT_SECONDS ?? '20', 10) * 1000;
 const ROUND_TIMEOUT_BOTH_IDLE_MS =
@@ -24,6 +27,8 @@ const ROUND_TIMEOUT_BOTH_IDLE_MS =
 export class BattleSession {
   public readonly playerAId: string;
   public readonly playerBId: string;
+  /** Practice vs AI — no Honor API, ladder, or match history. */
+  public readonly practiceMode: boolean;
   private playerAName: string;
   private playerBName: string;
   private readonly client: Client;
@@ -79,12 +84,14 @@ export class BattleSession {
     playerAName: string,
     playerBId: string,
     playerBName: string,
+    practiceMode: boolean = false,
   ) {
     this.client = client;
     this.playerAId = playerAId;
     this.playerAName = playerAName;
     this.playerBId = playerBId;
     this.playerBName = playerBName;
+    this.practiceMode = practiceMode;
   }
 
   attachChannels(publicChannel: TextChannel, privateAChannel: TextChannel, privateBChannel: TextChannel): void {
@@ -186,6 +193,8 @@ export class BattleSession {
     player.action = action;
     player.actionLocked = true;
 
+    this.commitPracticeAiActionSync();
+
     await this.updateBattleEmbed();
 
     // If both locked in, resolve
@@ -280,8 +289,52 @@ export class BattleSession {
       // Update the snapshot stored in `result` so downstream logger sees full combat log.
       result.combatLogLines = [...this.combatLogLines];
 
-      const settlement = await SettlementService.settle(result);
-      const matchHistoryId = settlement.matchHistoryId ?? null;
+      let matchHistoryId: string | null = null;
+      let settlement: SettlementResult | null = null;
+
+      if (!this.practiceMode) {
+        settlement = await SettlementService.settle(result);
+        matchHistoryId = settlement.matchHistoryId ?? null;
+      } else {
+        // Practice (PvE): create match history so players can view combat logs via Match History buttons.
+        // We intentionally set honor/rating changes to 0 (no ladder/honor impact).
+        const doc = await MatchHistory.create({
+          playerAId: result.playerAId,
+          playerBId: result.playerBId,
+          playerAName: result.playerAName,
+          playerBName: result.playerBName,
+          playerAJob: result.playerAJob,
+          playerBJob: result.playerBJob,
+          winnerId: result.isDraw ? null : result.winnerId,
+          isDraw: result.isDraw,
+          totalRounds: result.totalRounds,
+          playerAHonorEarned: 0,
+          playerBHonorEarned: 0,
+          playerARatingChange: 0,
+          playerBRatingChange: 0,
+          endedByForfeit: result.endedByForfeit,
+          endedByTimeout: result.endedByTimeout,
+          ...(this.duelCardId ? { duelCardId: this.duelCardId } : {}),
+          ...(this.duelDisplayId ? { duelDisplayId: this.duelDisplayId } : {}),
+          ...(this.duelGuildId ? { guildId: this.duelGuildId } : {}),
+          combatLogLines: [...this.combatLogLines],
+        }).catch((err) => {
+          logger.error('[Practice] Failed to create MatchHistory:', err);
+          return null;
+        });
+
+        if (doc) {
+          matchHistoryId = String(doc._id);
+          if (this.duelCardId) {
+            await DuelCard.updateOne(
+              { _id: this.duelCardId },
+              { $set: { status: 'completed', matchHistoryId: doc._id } },
+            ).catch(() => {});
+          }
+        } else {
+          matchHistoryId = null;
+        }
+      }
 
       // Build final result embed (shown to both players in their private channels).
       if (this.playerA && this.playerB) {
@@ -290,9 +343,10 @@ export class BattleSession {
         const loserName = isDraw ? null : (result.winnerId === result.playerAId ? this.playerBName : this.playerAName);
 
         const finalColor = isDraw ? 0x95a5a6 : 0xf1c40f;
+        const practiceTag = this.practiceMode ? ' (Practice)' : '';
         const finalTitle = isDraw
-          ? `⚔️ Draw — Round ${this.round}`
-          : `🏆 ${winnerName} wins! — Round ${this.round}`;
+          ? `⚔️ Draw${practiceTag} — Round ${this.round}`
+          : `🏆 ${winnerName} wins!${practiceTag} — Round ${this.round}`;
 
         const pA = this.playerA;
         const pB = this.playerB;
@@ -323,49 +377,56 @@ export class BattleSession {
           },
         );
 
-        // Honor fields
-        const rA = settlement.ratingA;
-        const rB = settlement.ratingB;
+        if (this.practiceMode) {
+          embed.addFields({
+            name: '🥋 Practice',
+            value: 'No Honor Points or ladder rating changes. Training only.',
+            inline: false,
+          });
+          embed.setFooter({ text: 'Practice match complete' });
+        } else if (settlement) {
+          const rA = settlement.ratingA;
+          const rB = settlement.ratingB;
 
-        embed.addFields(
-          {
-            name: `🏅 Honor — ${this.playerAName}`,
-            value: formatHonorBreakdown(settlement.honorA).join('\n'),
-            inline: true,
-          },
-          {
-            name: `🏅 Honor — ${this.playerBName}`,
-            value: formatHonorBreakdown(settlement.honorB).join('\n'),
-            inline: true,
-          },
-        );
+          embed.addFields(
+            {
+              name: `🏅 Honor — ${this.playerAName}`,
+              value: formatHonorBreakdown(settlement.honorA).join('\n'),
+              inline: true,
+            },
+            {
+              name: `🏅 Honor — ${this.playerBName}`,
+              value: formatHonorBreakdown(settlement.honorB).join('\n'),
+              inline: true,
+            },
+          );
 
-        // Rating fields (with rank change)
-        const fmtRating = (r: typeof rA, name: string) => {
-          const arrow = r.delta >= 0 ? '📈' : '📉';
-          const sign = r.delta >= 0 ? '+' : '';
-          const rankPart = r.rankChanged ? `\n🎖️ Rank → **${r.newRank}**` : '';
-          return `${arrow} ${r.oldRating} → **${r.newRating}** (${sign}${r.delta})${rankPart}`;
-        };
+          const fmtRating = (r: typeof rA) => {
+            const arrow = r.delta >= 0 ? '📈' : '📉';
+            const sign = r.delta >= 0 ? '+' : '';
+            const rankPart = r.rankChanged ? `\n🎖️ Rank → **${r.newRank}**` : '';
+            return `${arrow} ${r.oldRating} → **${r.newRating}** (${sign}${r.delta})${rankPart}`;
+          };
 
-        embed.addFields(
-          {
-            name: `📊 Rating — ${this.playerAName}`,
-            value: fmtRating(rA, this.playerAName),
-            inline: true,
-          },
-          {
-            name: `📊 Rating — ${this.playerBName}`,
-            value: fmtRating(rB, this.playerBName),
-            inline: true,
-          },
-        );
+          embed.addFields(
+            {
+              name: `📊 Rating — ${this.playerAName}`,
+              value: fmtRating(rA),
+              inline: true,
+            },
+            {
+              name: `📊 Rating — ${this.playerBName}`,
+              value: fmtRating(rB),
+              inline: true,
+            },
+          );
 
-        embed.setFooter({ text: 'Match complete · Stats updated' });
+          embed.setFooter({ text: 'Match complete · Stats updated' });
+        }
+
         await Promise.all([
           this.battleMessageA?.edit({ embeds: [embed], components: [] }).catch(() => {}),
           this.battleMessageB?.edit({ embeds: [embed], components: [] }).catch(() => {}),
-          // Refresh public log (and remove any public action buttons after settlement).
           this.logMessage?.edit({ embeds: [this.buildLogEmbed()], components: [] }).catch(() => {}),
         ]);
       }
@@ -392,8 +453,9 @@ export class BattleSession {
                 ? 'Timeout'
                 : 'Elimination';
 
+          const practiceTag = this.practiceMode ? ' (Practice)' : '';
           const historyEmbed = new EmbedBuilder()
-            .setTitle(`⚔️ Shadow Duel ${this.duelDisplayId ? `#${this.duelDisplayId}` : ''}`.trim())
+            .setTitle(`⚔️ Shadow Duel${practiceTag} ${this.duelDisplayId ? `#${this.duelDisplayId}` : ''}`.trim())
             .setDescription(
               [
                 `🟥 **${this.playerAName}** ${JOB_EMOJI[pA.job]} ${jobA}  ╳  🟦 **${this.playerBName}** ${JOB_EMOJI[pB.job]} ${jobB}`,
@@ -423,16 +485,26 @@ export class BattleSession {
         }
       }
 
-      // Refresh leaderboard message in channel 4
-      const { UserInteractionService } = await import('../services/UserInteractionService');
-      await UserInteractionService.updateLeaderboardInChannel(this.client).catch(() => {});
+      if (!this.practiceMode) {
+        const { UserInteractionService } = await import('../services/UserInteractionService');
+        await UserInteractionService.updateLeaderboardInChannel(this.client).catch(() => {});
+      }
     } catch (err) {
       logger.error('Settlement failed:', err);
     } finally {
       SessionManager.removeSession(this);
       // Mark phase as finished (best-effort).
       await this.updateTimerEmbed(false, true).catch(() => {});
-      await this.postAdminDeletePrompt().catch(() => {});
+      // Auto-delete temp duel channels (no need to wait for admin).
+      const delayMs = parseInt(
+        process.env.SHADOW_DUEL_TEMP_CHANNEL_DELETE_DELAY_MS ??
+        process.env.BOBOZAN_TEMP_CHANNEL_DELETE_DELAY_MS ??
+        '5000',
+        10,
+      );
+      if (Number.isFinite(delayMs) && delayMs >= 0) {
+        this.autoDeleteTempChannels(delayMs).catch(() => {});
+      }
     }
   }
 
@@ -542,6 +614,32 @@ export class BattleSession {
     }
 
     return null;
+  }
+
+  /** After the human (player A) locks in during practice, pick a valid action for the AI (player B). */
+  private commitPracticeAiActionSync(): void {
+    if (!this.practiceMode || this.settled || !this.playerA || !this.playerB) return;
+    if (!this.playerA.actionLocked || this.playerB.actionLocked) return;
+    const act = this.tryPickAiAction(this.playerB);
+    this.playerB.action = act;
+    this.playerB.actionLocked = true;
+  }
+
+  private tryPickAiAction(ai: Player): Action {
+    const pool = [Action.Ultimate, Action.Break, Action.Attack, Action.Defend, Action.Charge];
+    for (let i = pool.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [pool[i], pool[j]] = [pool[j], pool[i]];
+    }
+    for (const act of pool) {
+      const energyBefore = ai.energy;
+      const err = this.validateAction(ai, act);
+      if (err === null) {
+        return act;
+      }
+      ai.energy = energyBefore;
+    }
+    return Action.Defend;
   }
 
   // ── Embed Rendering ─────────────────────────────────────────────────
@@ -724,6 +822,9 @@ export class BattleSession {
 
   private buildPrivateControlComponents(viewerId: string): ActionRowBuilder<ButtonBuilder>[] {
     if (this.settled) return [];
+    if (this.practiceMode && viewerId === this.playerBId) {
+      return [];
+    }
     const viewer = this.getPlayer(viewerId);
     if (!viewer) return [];
 
@@ -979,7 +1080,7 @@ export class BattleSession {
       this.battleMessageA = await this.privateChannelA.send({ embeds: [embed], components });
     }
 
-    // Private B: timeline + recap + control
+    // Private B: timeline + recap + control (or AI placeholder in practice mode)
     if (!this.timerMessageB) {
       this.timerMessageB = await this.privateChannelB.send({
         embeds: [this.buildTimerEmbed(false, false)],
@@ -991,9 +1092,19 @@ export class BattleSession {
       });
     }
     if (!this.battleMessageB) {
-      const embed = this.buildPrivateControlEmbed(this.playerBId);
-      const components = this.buildPrivateControlComponents(this.playerBId);
-      this.battleMessageB = await this.privateChannelB.send({ embeds: [embed], components });
+      if (this.practiceMode) {
+        const placeholder = new EmbedBuilder()
+          .setTitle('🤖 Training Opponent (AI)')
+          .setDescription(
+            'This side is controlled by the bot. After you lock in each round, the AI picks an action automatically (hidden until resolve).',
+          )
+          .setColor(0x95a5a6);
+        this.battleMessageB = await this.privateChannelB.send({ embeds: [placeholder] });
+      } else {
+        const embed = this.buildPrivateControlEmbed(this.playerBId);
+        const components = this.buildPrivateControlComponents(this.playerBId);
+        this.battleMessageB = await this.privateChannelB.send({ embeds: [embed], components });
+      }
     }
   }
 
@@ -1036,5 +1147,25 @@ export class BattleSession {
     );
 
     await ch.send({ embeds: [embed], components: [row] }).catch(() => {});
+  }
+
+  private async autoDeleteTempChannels(delayMs: number): Promise<void> {
+    if (!this.channel || !this.privateChannelA || !this.privateChannelB) return;
+    const publicChannel = this.channel;
+    const privateA = this.privateChannelA;
+    const privateB = this.privateChannelB;
+    const categoryId = publicChannel.parentId ?? null;
+
+    setTimeout(async () => {
+      await publicChannel.delete().catch(() => {});
+      await privateA.delete().catch(() => {});
+      await privateB.delete().catch(() => {});
+
+      if (categoryId) {
+        const cat = await this.client.channels.fetch(categoryId).catch(() => null);
+        // Best-effort: category may fail to delete if still contains other channels.
+        await (cat as any)?.delete?.().catch(() => {});
+      }
+    }, delayMs);
   }
 }
